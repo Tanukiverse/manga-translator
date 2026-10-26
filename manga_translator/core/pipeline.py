@@ -69,6 +69,19 @@ class Models:
             self._lama.release()
             self._lama = None
 
+    def loaded(self) -> list[str]:
+        """Models currently held in memory by this app (for the info page)."""
+        names = []
+        if self._detector is not None:
+            names.append("ตรวจจับข้อความ")
+        if "ja" in self._ocr:
+            names.append("OCR ญี่ปุ่น (GPU)" if self.settings.use_gpu else "OCR ญี่ปุ่น (CPU)")
+        if "en" in self._ocr:
+            names.append("OCR อังกฤษ")
+        if self._lama is not None:
+            names.append(f"LaMa ({self._lama.device})")
+        return names
+
     def release_all(self) -> None:
         self._detector = None
         self._ocr.clear()

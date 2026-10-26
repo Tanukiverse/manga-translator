@@ -111,6 +111,7 @@ class MainWindow(QMainWindow):
         self.export_act = QAction("💾 Export", self, shortcut=QKeySequence.StandardKey.Save, triggered=self.export)
         tb.addAction(self.export_act)
         tb.addAction(QAction("⚙ ตั้งค่า", self, triggered=self.open_settings))
+        tb.addAction(QAction("ℹ ข้อมูลและสถานะ", self, shortcut="F1", triggered=self.open_info))
 
         undo = QAction("Undo", self, shortcut=QKeySequence.StandardKey.Undo, triggered=self.undo)
         redo = QAction("Redo", self, shortcut=QKeySequence.StandardKey.Redo, triggered=self.redo)
@@ -523,6 +524,15 @@ class MainWindow(QMainWindow):
         for p, d in ready:
             copy_export(d.final_path, Path(folder) / f"{p.stem}.png")
         self.statusBar().showMessage(f"บันทึก {len(ready)} หน้าไปที่ {folder}", 8000)
+
+    def open_info(self):
+        from .info_dialog import InfoDialog
+
+        if getattr(self, "_info", None) is None:
+            self._info = InfoDialog(self)
+            self._info.finished.connect(lambda _: setattr(self, "_info", None))
+        self._info.show()
+        self._info.raise_()
 
     def open_settings(self):
         dlg = SettingsDialog(self.settings, self)
