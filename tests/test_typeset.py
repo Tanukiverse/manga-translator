@@ -97,3 +97,15 @@ def test_long_text_in_tiny_bubble_stays_readable_and_whole():
     assert lay.size >= min_size_for(shape)
     assert lay.lines == ["ผู้บัญชาการ!"]  # not broken inside the word
     assert spilled
+
+
+def test_user_text_rect_overrides_bubble():
+    from manga_translator.core.typeset import place
+
+    img = np.full((600, 600, 3), 255, np.uint8)
+    r = Region(id=1, bbox=[50, 50, 200, 120], translation="สวัสดีครับ", text_rect=[300, 400, 220, 90])
+    rect, lay, spilled = place(img, r, "th")
+    assert rect == (300, 400, 220, 90) and lay.fits and not spilled
+    out, _ = render(img, [r], "th")
+    ink = np.argwhere(out.min(axis=2) < 128)
+    assert ink[:, 0].min() >= 400 and ink[:, 1].min() >= 300  # drawn where the user put it

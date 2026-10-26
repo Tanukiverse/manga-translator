@@ -64,6 +64,34 @@ def main() -> int:
     win.redo()
     assert win.doc.region(first.id).translation == "ทดสอบแก้คำแปล", "redo failed"
 
+    # move a translation by dragging its text box with the mouse, like a user would
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    from manga_translator.ui.canvas import MODE_TEXT
+
+    win.canvas.fit()
+    win.set_mode(MODE_TEXT)
+    app.processEvents()
+    rid, item = next(iter(win.canvas.items_by_id.items()))
+    assert item.kind == "text"
+    before = item.bbox()
+    vp = win.canvas.viewport()
+    start = win.canvas.mapFromScene(item.sceneBoundingRect().center())
+    end = start + QPoint(-60, 80)
+    QTest.mousePress(vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start)
+    for i in range(1, 11):
+        QTest.mouseMove(vp, start + (end - start) * (i / 10))
+    QTest.mouseRelease(vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, end)
+    app.processEvents()
+    moved = win.doc.region(rid).text_rect
+    assert moved and moved[:2] != before[:2], (before, moved)
+    print("text moved:", before, "->", moved)
+    win.undo()
+    assert win.doc.region(rid).text_rect is None, "undo of text move failed"
+    win.redo()
+    assert win.doc.region(rid).text_rect == moved
+
     win.show_layer("final", fit=True)
     app.processEvents()
     win.grab().save(str(shot))

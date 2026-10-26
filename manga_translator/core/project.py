@@ -36,6 +36,7 @@ class Region:
     outline: str = ""  # empty = none, e.g. "#ffffff"
     align: str = "center"
     locked: bool = False  # skip in automatic steps; user edited it
+    text_rect: list[int] | None = None  # x, y, w, h where the user put the translation; None = auto
 
     @property
     def rect(self) -> tuple[int, int, int, int]:

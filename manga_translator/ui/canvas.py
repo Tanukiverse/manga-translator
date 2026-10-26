@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
-MODE_SELECT, MODE_ADD, MODE_PAINT, MODE_ERASE = "select", "add", "paint", "erase"
+MODE_SELECT, MODE_ADD, MODE_PAINT, MODE_ERASE, MODE_TEXT = "select", "add", "paint", "erase", "text"
 HANDLE = 10
 
 
@@ -28,10 +28,13 @@ def to_qimage(img: np.ndarray) -> QImage:
 
 
 class RegionItem(QGraphicsRectItem):
-    def __init__(self, canvas: "Canvas", rid: int, bbox):
+    """A draggable, resizable box: a text region (kind "region") or where its translation is
+    drawn (kind "text")."""
+
+    def __init__(self, canvas: "Canvas", rid: int, bbox, kind: str = "region"):
         x, y, w, h = bbox
         super().__init__(0, 0, w, h)
-        self.canvas, self.rid = canvas, rid
+        self.canvas, self.rid, self.kind = canvas, rid, kind
         self.setPos(x, y)
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -51,6 +54,12 @@ class RegionItem(QGraphicsRectItem):
         self.set_style(False)
 
     def set_style(self, locked: bool):
+        if self.kind == "text":
+            pen = QPen(QColor("#e65100"), 2, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            self.setPen(pen)
+            self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            return
         color = QColor("#1e88e5") if not locked else QColor("#43a047")
         pen = QPen(color, 2)
         pen.setCosmetic(True)
@@ -60,12 +69,12 @@ class RegionItem(QGraphicsRectItem):
         self.setBrush(QBrush(fill))
 
     def paint(self, painter, option, widget=None):
-        if self.isSelected():
-            pen = QPen(QColor("#ff9800"), 3)
-            pen.setCosmetic(True)
-            self.setPen(pen)
-        super().paint(painter, option, widget)
+        painter.setBrush(self.brush())
+        pen = QPen(QColor("#ff9800"), 3) if self.isSelected() else QPen(self.pen())
+        pen.setCosmetic(True)
+        painter.setPen(pen)
         r = self.rect()
+        painter.drawRect(r)
         painter.fillRect(QRectF(r.right() - HANDLE, r.bottom() - HANDLE, HANDLE, HANDLE), QColor("#ff9800"))
 
     def _on_handle(self, pos: QPointF) -> bool:
@@ -93,7 +102,8 @@ class RegionItem(QGraphicsRectItem):
         super().mouseReleaseEvent(e)
         self._resizing = False
         if self._press_state is not None and self._press_state != self.bbox():
-            self.canvas.region_changed.emit(self.rid, self.bbox())
+            signal = self.canvas.text_moved if self.kind == "text" else self.canvas.region_changed
+            signal.emit(self.rid, self.bbox())
         self._press_state = None
 
     def bbox(self) -> list[int]:
@@ -104,6 +114,7 @@ class RegionItem(QGraphicsRectItem):
 class Canvas(QGraphicsView):
     region_selected = Signal(int)
     region_changed = Signal(int, list)  # id, bbox
+    text_moved = Signal(int, list)  # id, rect where the translation is drawn
     region_added = Signal(list)  # bbox
     mask_edit_started = Signal()
     mask_edited = Signal()
@@ -160,12 +171,18 @@ class Canvas(QGraphicsView):
         self.show_mask = on
         self._refresh_mask()
 
-    def set_regions(self, regions, selected: int | None = None):
+    def set_regions(self, regions, selected: int | None = None, text_rects: dict | None = None):
+        """Show region boxes, or with text_rects ({id: rect}) the boxes of the drawn translations."""
         for item in self.items_by_id.values():
             self.scene().removeItem(item)
         self.items_by_id.clear()
         for r in regions:
-            item = RegionItem(self, r.id, r.bbox)
+            if text_rects is not None:
+                if r.id not in text_rects:
+                    continue
+                item = RegionItem(self, r.id, text_rects[r.id], kind="text")
+            else:
+                item = RegionItem(self, r.id, r.bbox)
             item.set_style(r.locked)
             item.setVisible(self.show_boxes)
             self.scene().addItem(item)
@@ -187,11 +204,11 @@ class Canvas(QGraphicsView):
 
     def set_mode(self, mode: str):
         self.mode = mode
-        movable = mode == MODE_SELECT
+        movable = mode in (MODE_SELECT, MODE_TEXT)
         for item in self.items_by_id.values():
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, movable)
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, movable)
-        self.viewport().setCursor(Qt.CursorShape.CrossCursor if mode != MODE_SELECT else Qt.CursorShape.ArrowCursor)
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor if movable else Qt.CursorShape.CrossCursor)
 
     # ---- zoom --------------------------------------------------------
     def wheelEvent(self, e):

@@ -295,6 +295,19 @@ def choose_layout(text: str, lang: str, family: str, inner, loose, fixed_size: i
     return loose, lay, True
 
 
+def place(cleaned_bgr: np.ndarray, r, lang: str, default_family: str = ""):
+    """(rect, layout, spilled) for one region: the user's own text box when they moved it,
+    otherwise the automatic fit inside the bubble."""
+    family = r.font_family or default_family or DEFAULT_FONTS.get(lang, "Arial")
+    text = (r.translation or "").strip()
+    if r.text_rect:
+        x, y, w, h = r.text_rect
+        lay = fit_text(text, lang, family, w, h, r.font_size, max_size_for(cleaned_bgr.shape))
+        return (x, y, w, h), lay, False
+    inner, loose = bubble_rects(cleaned_bgr, r.bbox)
+    return choose_layout(text, lang, family, inner, loose, r.font_size, cleaned_bgr.shape)
+
+
 def render(cleaned_bgr: np.ndarray, regions, lang: str, default_family: str = "") -> tuple[np.ndarray, list[int]]:
     """Draw every region's translation. Returns (image, ids of regions whose text did not fit)."""
     ensure_qt()
@@ -314,9 +327,8 @@ def render(cleaned_bgr: np.ndarray, regions, lang: str, default_family: str = ""
         text = (r.translation or "").strip()
         if not text:
             continue
-        inner, loose = bubble_rects(cleaned_bgr, r.bbox)
         family = r.font_family or family_default
-        (rx, ry, rw, rh), lay, spilled = choose_layout(text, lang, family, inner, loose, r.font_size, cleaned_bgr.shape)
+        (rx, ry, rw, rh), lay, spilled = place(cleaned_bgr, r, lang, default_family)
         if spilled or not lay.fits:
             overflow.append(r.id)
         font = QFont(family)

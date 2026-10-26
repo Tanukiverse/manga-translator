@@ -28,10 +28,11 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.pipeline import STEP_LABELS, STEPS, Models, run_typeset
+from ..core.typeset import place
 from ..core.project import PageDoc, Region, copy_export
 from ..core.settings import Settings
 from ..core.translate import LANG_NAMES
-from .canvas import MODE_ADD, MODE_ERASE, MODE_PAINT, MODE_SELECT, Canvas, to_qimage
+from .canvas import MODE_ADD, MODE_ERASE, MODE_PAINT, MODE_SELECT, MODE_TEXT, Canvas, to_qimage
 from .region_panel import RegionPanel
 from .settings_dialog import SettingsDialog
 from .worker import AIWorker
@@ -146,6 +147,7 @@ class MainWindow(QMainWindow):
             (MODE_ADD, "+ กล่อง", "ลากบนภาพเพื่อสร้างกล่องข้อความใหม่"),
             (MODE_PAINT, "ระบายส่วนที่จะลบ", "ระบายทับตัวอักษรที่ยังลบไม่หมด"),
             (MODE_ERASE, "ยางลบ", "เอาส่วนที่ไม่ใช่ตัวอักษรออกจากพื้นที่ลบ"),
+            (MODE_TEXT, "ย้ายข้อความ", "ลากคำแปลไปวางตรงไหนก็ได้ ลากมุมขวาล่างเพื่อปรับพื้นที่ (ตัวอักษรปรับขนาดตาม)"),
         ]:
             b = QPushButton(label)
             b.setCheckable(True)
@@ -172,6 +174,7 @@ class MainWindow(QMainWindow):
         self.canvas = Canvas()
         self.canvas.region_selected.connect(self._canvas_selected)
         self.canvas.region_changed.connect(self._canvas_moved)
+        self.canvas.text_moved.connect(self._text_moved)
         self.canvas.region_added.connect(self._canvas_added)
         self.canvas.mask_edit_started.connect(self.push_undo)
         self.canvas.mask_edited.connect(self._mask_edited)
@@ -258,7 +261,7 @@ class MainWindow(QMainWindow):
     def reload(self, fit: bool = False, layer: str | None = None):
         if not self.doc:
             return
-        self.canvas.set_regions(self.doc.regions, self.selected)
+        self._refresh_boxes()
         self.canvas.set_mask(self.doc.load_layer("mask"))
         self.panel.set_regions(self.doc.regions, self.selected)
         self.show_layer(layer or self.layer, fit=fit)
@@ -279,8 +282,35 @@ class MainWindow(QMainWindow):
         self.canvas.set_show_boxes(layer != "final" or self.canvas.mode != MODE_SELECT)
         self.canvas.set_show_mask(self.canvas.mode in (MODE_PAINT, MODE_ERASE))
 
+    def _text_rects(self) -> dict[int, list[int]]:
+        """Where each translation is drawn now (the user's box or the automatic fit)."""
+        cleaned = self.doc.load_layer("cleaned")
+        if cleaned is None:
+            return {}
+        return {r.id: list(place(cleaned, r, self.doc.target_lang, self.settings.font_family)[0])
+                for r in self.doc.regions if (r.translation or "").strip()}
+
+    def _refresh_boxes(self):
+        if self.canvas.mode == MODE_TEXT:
+            self.canvas.set_regions(self.doc.regions, self.selected, text_rects=self._text_rects())
+        else:
+            self.canvas.set_regions(self.doc.regions, self.selected)
+        self.canvas.set_mode(self.canvas.mode)  # new items take the mode's movable flags
+
     def set_mode(self, mode: str):
+        if mode == MODE_TEXT and (not self.doc or not self.doc.final_path.exists()):
+            QMessageBox.information(self, "ยังไม่มีคำแปลบนภาพ", "กด '5. ใส่คำแปล' ก่อน แล้วค่อยย้ายข้อความ")
+            mode = MODE_SELECT
+            for b in self.mode_group.buttons():
+                b.setChecked(b.property("mode") == MODE_SELECT)
+        was_text = self.canvas.mode == MODE_TEXT
+        for b in self.mode_group.buttons():
+            b.setChecked(b.property("mode") == mode)
         self.canvas.set_mode(mode)
+        if self.doc and (was_text or mode == MODE_TEXT):
+            self._refresh_boxes()
+        if mode == MODE_TEXT:
+            self.show_layer("final")
         if mode in (MODE_PAINT, MODE_ERASE):
             if self.doc and self.canvas.mask is None:
                 self.canvas.set_mask(np.zeros(self.doc.load_original().shape[:2], np.uint8))
@@ -352,13 +382,35 @@ class MainWindow(QMainWindow):
             setattr(r, k, v)
         self.doc.save()
         self.panel.refresh_label(r)
+        if "text_rect" in fields and self.panel.current == rid:
+            self.panel.auto_place.setEnabled(bool(r.text_rect))
         self.canvas.items_by_id.get(rid) and self.canvas.items_by_id[rid].set_style(r.locked)
         # live preview: re-typeset when the cleaned layer exists (fast, no AI)
-        if self.doc.cleaned_path.exists() and any(k in fields for k in
-                                                  ("translation", "font_family", "font_size", "color", "outline", "align")):
+        if self.doc.cleaned_path.exists() and any(k in fields for k in ("translation", "font_family", "font_size", "color",
+                                                                        "outline", "align", "text_rect")):
             run_typeset(self.doc, self.models, self.statusBar().showMessage)
             if self.layer == "final":
                 self.show_layer("final")
+            if self.canvas.mode == MODE_TEXT:
+                self._refresh_boxes()  # the automatic box follows the new text
+
+    def _text_moved(self, rid: int, rect: list):
+        r = self.doc.region(rid)
+        if not r:
+            return
+        self.push_undo()
+        r.text_rect = rect
+        r.locked = True  # keep the user's placement when steps are re-run
+        self.doc.save()
+        self.panel.refresh_label(r)
+        if self.panel.current == rid:
+            self.panel.locked.blockSignals(True)
+            self.panel.locked.setChecked(True)
+            self.panel.locked.blockSignals(False)
+            self.panel.auto_place.setEnabled(True)
+        run_typeset(self.doc, self.models, self.statusBar().showMessage)
+        # only the image changes: the dragged box is already where the user dropped it
+        self.show_layer("final")
 
     def delete_region(self, rid: int):
         self.push_undo()

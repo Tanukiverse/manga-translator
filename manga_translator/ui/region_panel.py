@@ -116,6 +116,10 @@ class RegionPanel(QWidget):
         form.addRow("", self.locked)
         lay.addLayout(form)
 
+        self.auto_place = QPushButton("วางข้อความอัตโนมัติ")
+        self.auto_place.setToolTip("ยกเลิกตำแหน่งที่ย้ายเอง ให้โปรแกรมจัดคำแปลในบอลลูนให้")
+        self.auto_place.clicked.connect(lambda: self._emit({"text_rect": None}))
+        lay.addWidget(self.auto_place)
         self.delete = QPushButton("ลบกล่องนี้")
         self.delete.clicked.connect(lambda: self.current is not None and self.delete_requested.emit(self.current))
         lay.addWidget(self.delete)
@@ -192,12 +196,13 @@ class RegionPanel(QWidget):
         self.outline.set_value(r.outline)
         self.locked.setChecked(r.locked)
         self.set_enabled(True)
+        self.auto_place.setEnabled(bool(r.text_rect))
         self._loading = False
         self._burst = False
 
     def set_enabled(self, on: bool):
         for w in (self.source, self.translation, self.font_default, self.size, self.align,
-                  self.color, self.outline, self.locked, self.delete):
+                  self.color, self.outline, self.locked, self.delete, self.auto_place):
             w.setEnabled(on)
         self.font.setEnabled(on and not self.font_default.isChecked())
 
