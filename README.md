@@ -12,7 +12,7 @@
 ต้องมี: Windows 10/11, [Python 3.12](https://www.python.org/downloads/), [Git](https://git-scm.com/download/win) และ [Ollama](https://ollama.com/download) ส่วนการ์ดจอ NVIDIA ไม่บังคับ แต่ถ้ามีจะลบคำบนพื้นที่มีลายได้เร็วกว่ามาก
 
 ```
-git clone https://github.com/pong0101/manga-translator.git
+git clone https://github.com/VAQELUNORA/manga-translator.git
 cd manga-translator
 setup.bat
 ```
