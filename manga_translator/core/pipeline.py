@@ -186,7 +186,11 @@ def run_translate(doc: PageDoc, models: Models, progress: Progress | None = None
     _invalidate_after(doc, "translate")
     doc.done["translate"] = True
     doc.save()
-    _log(progress, f"แปลแล้ว {len(result)}/{len(lines)} กล่อง")
+    msg = f"แปลแล้ว {len(result)}/{len(lines)} กล่อง"
+    if translator.wrong_language:
+        msg += (f" (กล่อง {', '.join(map(str, translator.wrong_language))} ยังไม่ใช่ภาษาเป้าหมาย"
+                f" โมเดล {translator.cfg.model} อาจไม่ทำตามคำสั่งเรื่องภาษา)")
+    _log(progress, msg)
 
 
 def run_clean(doc: PageDoc, models: Models, progress: Progress | None = None) -> None:

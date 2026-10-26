@@ -44,7 +44,7 @@ def test_missing_id_retried_alone():
 
 
 def test_model_without_thinking_retries_without_field():
-    s = FakeSession([FakeResp(400, {"error": "model does not support thinking"}), _reply([{"id": 1, "text": "x"}])])
+    s = FakeSession([FakeResp(400, {"error": "model does not support thinking"}), _reply([{"id": 1, "text": "ก"}])])
     OllamaTranslator(TranslatorConfig(), s).translate([(1, "a")], "en", "th")
     assert "think" not in s.bodies[1]
 
@@ -71,3 +71,33 @@ def test_real_ollama():
     out = OllamaTranslator().translate([(1, "おはようございます"), (2, "今日はいい天気だね")], "ja", "th")
     assert set(out) == {1, 2}
     assert all(any("฀" <= c <= "๿" for c in t) for t in out.values())
+
+
+def test_wrong_language_is_retried_with_a_reminder():
+    s = FakeSession([_reply([{"id": 1, "text": "こんにちは"}, {"id": 2, "text": "?"}]),
+                     _reply([{"id": 1, "text": "สวัสดี"}, {"id": 2, "text": "?"}])])
+    tr = OllamaTranslator(TranslatorConfig(), s)
+    out = tr.translate([(1, "HELLO"), (2, "?")], "en", "th")
+    assert out == {1: "สวัสดี", 2: "?"}
+    retry = s.bodies[1]["messages"]
+    assert "never in the source language" in retry[-1]["content"]
+    assert all(m["role"] != "assistant" for m in retry)  # fresh request, not shown its wrong answer
+    assert s.bodies[1]["think"] is False  # the retry keeps thinking off
+    assert s.bodies[1]["format"] == "json"  # and drops the strict schema
+    assert tr.wrong_language == []
+
+
+def test_wrong_language_reported_when_retry_fails():
+    s = FakeSession([_reply([{"id": 1, "text": "こんにちは"}]), _reply([{"id": 1, "text": "こんにちは"}])])
+    tr = OllamaTranslator(TranslatorConfig(), s)
+    tr.translate([(1, "HELLO")], "en", "th")
+    assert tr.wrong_language == [1]
+
+
+def test_target_language_named_in_request():
+    msgs = build_messages([(1, "a")], "en", "th", TranslatorConfig())
+    assert "ภาษาไทย" in msgs[1]["content"]
+
+
+def test_parse_free_json_mapping():
+    assert parse_response('{"1": "สวัสดี", "2": "ลาก่อน\\nนะ"}') == {1: "สวัสดี", 2: "ลาก่อน นะ"}
