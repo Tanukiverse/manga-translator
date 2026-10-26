@@ -192,17 +192,19 @@ _SYMBOLS = set("$#@%^&*=+<>|{}[]~\\_")
 def is_junk_english(text: str) -> bool:
     """True when English OCR read noise (sound effects, art, a Japanese page) instead of lettering,
     e.g. "$7R6AH-7." or "S 6 MT 1 1 2 5". Punctuation-only bubbles ("?", "...") are real text."""
-    t = text.strip()
+    t = re.sub(r"[\^`´]", "'", text.strip())  # misread apostrophes: "YOU^VE"
     if not any(c.isalnum() for c in t):
         return False
-    if any(c in _SYMBOLS for c in t):
-        return True
     tokens = re.findall(r"[A-Za-z0-9']+", t)
-    if any(re.search(r"[A-Za-z]", w) and re.search(r"\d", w) for w in tokens):
-        return True  # letters and digits mixed in one word
     words = [w.strip("'").upper() for w in tokens if w.strip("'").isalpha()]
     real = [w for w in words if (len(w) >= 2 and (re.search(r"[AEIOUY]", w) or _VOWELLESS.match(w)))
             or w in ("I", "A", "O")]
+    if sum(len(w) >= 2 for w in real) >= 2:
+        return False  # a sentence with a stray misread symbol ("RETAIN_MY") is still lettering
+    if any(c in _SYMBOLS for c in t):
+        return True
+    if any(re.search(r"[A-Za-z]", w) and re.search(r"\d", w) for w in tokens):
+        return True  # letters and digits mixed in one word
     if real and all(len(w) == 1 for w in real) and sum(c.isdigit() for c in t) > sum(c.isalpha() for c in t):
         return True  # "11 I 1 0 6 3": digits with a stray letter, e.g. vertical Japanese page numbers
     return not real

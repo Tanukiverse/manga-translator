@@ -109,3 +109,8 @@ def test_english_box_on_japanese_page_is_left_alone():
 
     assert _skip_reason("ja", Region(1, [0, 0, 10, 10], source_text="ＢＯＯＭ！"), None, None) == "foreign"
     assert _skip_reason("ja", Region(1, [0, 0, 10, 10], source_text="ＯＫだよ"), None, None) == ""
+
+
+@pytest.mark.parametrize("text", ["WELL, YOU^VE GOT ME THERE...", "I STILL KEEP_MY WORD"])
+def test_sentence_with_a_misread_symbol_is_lettering(text):
+    assert not is_junk_english(text)
