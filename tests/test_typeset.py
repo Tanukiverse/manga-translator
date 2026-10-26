@@ -109,3 +109,23 @@ def test_user_text_rect_overrides_bubble():
     out, _ = render(img, [r], "th")
     ink = np.argwhere(out.min(axis=2) < 128)
     assert ink[:, 0].min() >= 400 and ink[:, 1].min() >= 300  # drawn where the user put it
+
+
+def test_enter_forces_a_line_break():
+    lay = fit_text("สวัสดีครับ\nวันนี้อากาศดีมากเลยนะ", "th", "Leelawadee UI", 400, 300)
+    assert lay.lines[0] == "สวัสดีครับ"  # would fit on one line with the rest, but Enter was pressed
+    assert "".join(lay.lines[1:]) == "วันนี้อากาศดีมากเลยนะ"
+
+
+def test_manual_wrap_keeps_typed_lines_and_shrinks():
+    text = "ไปกันเถอะ\nทุกคนรออยู่แล้ว"
+    auto = fit_text("ไปกันเถอะทุกคนรออยู่แล้ว", "th", "Leelawadee UI", 90, 300)
+    manual = fit_text(text, "th", "Leelawadee UI", 90, 300, manual=True)
+    assert manual.lines == ["ไปกันเถอะ", "ทุกคนรออยู่แล้ว"]
+    assert manual.fits and len(auto.lines) > 2
+
+
+def test_model_line_breaks_are_not_forced():
+    from manga_translator.core.translate import parse_response
+
+    assert parse_response('{"translations":[{"id":1,"text":"บรรทัดหนึ่ง\\nบรรทัดสอง"}]}') == {1: "บรรทัดหนึ่ง บรรทัดสอง"}

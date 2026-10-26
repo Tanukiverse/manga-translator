@@ -387,7 +387,7 @@ class MainWindow(QMainWindow):
         self.canvas.items_by_id.get(rid) and self.canvas.items_by_id[rid].set_style(r.locked)
         # live preview: re-typeset when the cleaned layer exists (fast, no AI)
         if self.doc.cleaned_path.exists() and any(k in fields for k in ("translation", "font_family", "font_size", "color",
-                                                                        "outline", "align", "text_rect")):
+                                                                        "outline", "align", "text_rect", "wrap")):
             run_typeset(self.doc, self.models, self.statusBar().showMessage)
             if self.layer == "final":
                 self.show_layer("final")

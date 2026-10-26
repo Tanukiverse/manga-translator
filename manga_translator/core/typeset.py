@@ -146,18 +146,33 @@ class Layout:
     broke: bool = False  # a word had to be split across lines
 
 
+def paragraphs(text: str) -> list[str]:
+    """Lines the user ended with Enter; each is wrapped on its own."""
+    return [" ".join(p.split()) for p in text.strip().splitlines()] or [""]
+
+
 def fit_text(text: str, lang: str, family: str, rect_w: float, rect_h: float, fixed_size: int = 0,
-             max_size: int = MAX_SIZE, min_size: int = MIN_SIZE) -> Layout:
+             max_size: int = MAX_SIZE, min_size: int = MIN_SIZE, manual: bool = False) -> Layout:
+    """Largest font size that fits. A line break typed by the user always starts a new line;
+    manual=True breaks only there (the font shrinks until the longest line fits)."""
     ensure_qt()
     from PySide6.QtGui import QFont, QFontMetricsF
 
-    tokens = tokenize(text, lang)
+    paras = paragraphs(text)
+    para_tokens = [tokenize(p, lang) for p in paras]
 
     def layout(size: int, allow_break: bool) -> Layout:
         font = QFont(family)
         font.setPixelSize(size)
         fm = QFontMetricsF(font)
-        lines, broke = wrap(tokens, fm, rect_w)
+        lines, broke = [], False
+        for para, tokens in zip(paras, para_tokens):
+            if manual or not para:
+                lines.append(para)
+                continue
+            plines, pbroke = wrap(tokens, fm, rect_w)
+            lines.extend(plines)
+            broke = broke or pbroke
         lh = fm.height() * LINE_SPACING
         widest = max((fm.horizontalAdvance(l) for l in lines), default=0)
         fits = widest <= rect_w + 0.5 and lh * len(lines) <= rect_h and (allow_break or not broke)
@@ -272,15 +287,15 @@ def min_size_for(page_shape) -> int:
     return max(MIN_SIZE, round(min(page_shape[:2]) * 0.011))
 
 
-def choose_layout(text: str, lang: str, family: str, inner, loose, fixed_size: int, page_shape):
+def choose_layout(text: str, lang: str, family: str, inner, loose, fixed_size: int, page_shape, manual: bool = False):
     """Pick (rect, layout, overflow): inside the bubble at a readable size if possible, then the
     looser bubble box, then a readable size spilling past the bubble (drawn with a halo)."""
     floor, cap = min_size_for(page_shape), max_size_for(page_shape)
     if fixed_size:
-        lay = fit_text(text, lang, family, inner[2], inner[3], fixed_size)
+        lay = fit_text(text, lang, family, inner[2], inner[3], fixed_size, manual=manual)
         return inner, lay, not lay.fits
     for rect in (inner, loose):
-        lay = fit_text(text, lang, family, rect[2], rect[3], 0, cap, floor)
+        lay = fit_text(text, lang, family, rect[2], rect[3], 0, cap, floor, manual)
         if lay.fits and not lay.broke:
             return rect, lay, False
     # too long for the bubble: keep it readable and let it spill sideways, centred on the bubble
@@ -288,10 +303,10 @@ def choose_layout(text: str, lang: str, family: str, inner, loose, fixed_size: i
     for widen in (1.3, 1.6, 2.0, 2.6, 3.2):
         nw = int(w * widen)
         rect = (int(x + w / 2 - nw / 2), y, nw, h)
-        lay = fit_text(text, lang, family, rect[2], rect[3], 0, cap, floor)
+        lay = fit_text(text, lang, family, rect[2], rect[3], 0, cap, floor, manual)
         if lay.fits and not lay.broke:
             return rect, lay, True
-    lay = fit_text(text, lang, family, loose[2], loose[3], 0, cap)
+    lay = fit_text(text, lang, family, loose[2], loose[3], 0, cap, manual=manual)
     return loose, lay, True
 
 
@@ -300,12 +315,13 @@ def place(cleaned_bgr: np.ndarray, r, lang: str, default_family: str = ""):
     otherwise the automatic fit inside the bubble."""
     family = r.font_family or default_family or DEFAULT_FONTS.get(lang, "Arial")
     text = (r.translation or "").strip()
+    manual = r.wrap == "manual"
     if r.text_rect:
         x, y, w, h = r.text_rect
-        lay = fit_text(text, lang, family, w, h, r.font_size, max_size_for(cleaned_bgr.shape))
+        lay = fit_text(text, lang, family, w, h, r.font_size, max_size_for(cleaned_bgr.shape), manual=manual)
         return (x, y, w, h), lay, False
     inner, loose = bubble_rects(cleaned_bgr, r.bbox)
-    return choose_layout(text, lang, family, inner, loose, r.font_size, cleaned_bgr.shape)
+    return choose_layout(text, lang, family, inner, loose, r.font_size, cleaned_bgr.shape, manual)
 
 
 def render(cleaned_bgr: np.ndarray, regions, lang: str, default_family: str = "") -> tuple[np.ndarray, list[int]]:

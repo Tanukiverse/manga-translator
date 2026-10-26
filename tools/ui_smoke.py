@@ -92,6 +92,21 @@ def main() -> int:
     win.redo()
     assert win.doc.region(rid).text_rect == moved
 
+    # line breaks: Enter in the translation box, then "break only at Enter"
+    from manga_translator.core.typeset import place
+
+    second = win.doc.regions[1]
+    win.panel.select(second.id)
+    win.panel.translation.setPlainText("ไปกันเถอะ\nทุกคนรออยู่")
+    win.panel._commit_pending()
+    win.panel.wrap.setCurrentIndex(win.panel.wrap.findData("manual"))
+    app.processEvents()
+    r2 = win.doc.region(second.id)
+    assert r2.wrap == "manual" and win.doc.load_layer("final") is not None
+    lines = place(win.doc.load_layer("cleaned"), r2, win.doc.target_lang)[1].lines
+    assert lines == ["ไปกันเถอะ", "ทุกคนรออยู่"], lines
+    print("manual lines:", lines)
+
     win.show_layer("final", fit=True)
     app.processEvents()
     win.grab().save(str(shot))

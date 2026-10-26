@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 ALIGNS = [("center", "กึ่งกลาง"), ("left", "ชิดซ้าย"), ("right", "ชิดขวา")]
+WRAPS = [("auto", "ตัดบรรทัดอัตโนมัติ"), ("manual", "ตัดเฉพาะที่กด Enter")]
 
 
 class ColorButton(QPushButton):
@@ -79,7 +80,7 @@ class RegionPanel(QWidget):
         self.source.setPlaceholderText("ข้อความต้นฉบับ")
         self.source.setFixedHeight(70)
         self.translation = QPlainTextEdit()
-        self.translation.setPlaceholderText("คำแปล")
+        self.translation.setPlaceholderText("คำแปล (กด Enter เพื่อขึ้นบรรทัดใหม่)")
         self.translation.setFixedHeight(90)
         form.addRow("ต้นฉบับ", self.source)
         form.addRow("คำแปล", self.translation)
@@ -101,6 +102,13 @@ class RegionPanel(QWidget):
         srow.addWidget(self.size)
         srow.addWidget(self.align)
         form.addRow("ขนาด", srow)
+
+        self.wrap = QComboBox()
+        for key, label in WRAPS:
+            self.wrap.addItem(label, key)
+        self.wrap.setToolTip("อัตโนมัติ: โปรแกรมตัดคำให้พอดีกรอบ และขึ้นบรรทัดใหม่ทุกครั้งที่กด Enter\n"
+                             "ตัดเฉพาะที่กด Enter: ใช้บรรทัดตามที่พิมพ์ทุกประการ ตัวอักษรย่อลงจนบรรทัดยาวสุดพอดีกรอบ")
+        form.addRow("บรรทัด", self.wrap)
 
         self.color = ColorButton()
         self.outline = ColorButton(allow_none=True)
@@ -133,6 +141,7 @@ class RegionPanel(QWidget):
         self.font_default.toggled.connect(self._font_default_toggled)
         self.size.valueChanged.connect(lambda v: self._emit({"font_size": v}))
         self.align.currentIndexChanged.connect(lambda _: self._emit({"align": self.align.currentData()}))
+        self.wrap.currentIndexChanged.connect(lambda _: self._emit({"wrap": self.wrap.currentData()}))
         self.color.changed.connect(lambda v: self._emit({"color": v}))
         self.outline.changed.connect(lambda v: self._emit({"outline": v}))
         self.locked.toggled.connect(lambda v: self._emit({"locked": v}))
@@ -192,6 +201,7 @@ class RegionPanel(QWidget):
             self.font.setCurrentFont(r.font_family)
         self.size.setValue(r.font_size)
         self.align.setCurrentIndex(max(0, [a for a, _ in ALIGNS].index(r.align) if r.align in dict(ALIGNS) else 0))
+        self.wrap.setCurrentIndex(max(0, [k for k, _ in WRAPS].index(r.wrap) if r.wrap in dict(WRAPS) else 0))
         self.color.set_value(r.color or "#000000")
         self.outline.set_value(r.outline)
         self.locked.setChecked(r.locked)
@@ -201,7 +211,7 @@ class RegionPanel(QWidget):
         self._burst = False
 
     def set_enabled(self, on: bool):
-        for w in (self.source, self.translation, self.font_default, self.size, self.align,
+        for w in (self.source, self.translation, self.font_default, self.size, self.align, self.wrap,
                   self.color, self.outline, self.locked, self.delete, self.auto_place):
             w.setEnabled(on)
         self.font.setEnabled(on and not self.font_default.isChecked())

@@ -148,7 +148,8 @@ def parse_response(content: str) -> dict[int, str]:
     out: dict[int, str] = {}
     for item in data.get("translations", []):
         try:
-            out[int(item["id"])] = str(item["text"]).strip()
+            # the model's own line breaks would act as forced breaks; layout wraps by itself
+            out[int(item["id"])] = " ".join(str(item["text"]).split())
         except (KeyError, TypeError, ValueError):
             continue
     return out
