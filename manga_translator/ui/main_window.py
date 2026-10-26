@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core import importer
+from ..core import importer, versions
 from ..core.export import AutoSaver
 from ..core.pages import SORT_KEYS, SORT_LABELS, load_order, save_order, sort_pages
 from ..core.pipeline import STEP_LABELS, STEPS, Models, run_typeset
@@ -141,6 +141,9 @@ class MainWindow(QMainWindow):
         undo = QAction("ย้อนกลับ", self, shortcut=QKeySequence.StandardKey.Undo, triggered=self.undo)
         redo = QAction("ทำซ้ำ", self, shortcut=QKeySequence.StandardKey.Redo, triggered=self.redo)
         delete = QAction("ลบกล่องที่เลือก", self, shortcut=QKeySequence.StandardKey.Delete, triggered=self._delete_shortcut)
+        self.history_act = QAction("🕘 ประวัติของหน้านี้…", self, shortcut="Ctrl+H", triggered=self.open_history,
+                                   toolTip="ย้อนกลับไปใช้ผลก่อนหน้า (เก็บไว้ทุกครั้งที่รันขั้นตอน)")
+        self.reset_act = QAction("↺ รีเซ็ตหน้าที่เลือกเป็นต้นฉบับ…", self, triggered=self.reset_pages)
         self.layer_acts = {}
         for n, (key, label) in enumerate(LAYERS, 1):
             self.layer_acts[key] = QAction(label, self, shortcut=f"Alt+{n}", triggered=lambda _=False, k=key: self.show_layer(k))
@@ -157,6 +160,8 @@ class MainWindow(QMainWindow):
         m.addActions([undo, redo])
         m.addSeparator()
         m.addAction(delete)
+        m.addSeparator()
+        m.addActions([self.history_act, self.reset_act])
         m = mb.addMenu("ขั้นตอน")
         m.addActions(list(self.step_actions.values()))
         m.addSeparator()
@@ -248,6 +253,8 @@ class MainWindow(QMainWindow):
         self.pages.setToolTip("ลากเพื่อเรียงเอง · Ctrl/Shift+คลิกเพื่อเลือกหลายหน้า")
         self.pages.currentRowChanged.connect(self._page_selected)
         self.pages.model().rowsMoved.connect(self._pages_reordered)
+        self.pages.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.pages.customContextMenuRequested.connect(self._pages_menu)
         ll.addWidget(self.pages, 1)
         self.skip_done = QCheckBox("ข้ามหน้าที่ทำครบแล้ว")
         self.skip_done.setToolTip("ตอนทำหลายหน้า ข้ามหน้าที่ทำครบ 5 ขั้นแล้ว")
@@ -636,6 +643,8 @@ class MainWindow(QMainWindow):
                                    else QAbstractItemView.DragDropMode.InternalMove)
         self.cancel_act.setEnabled(busy)
         self.export_act.setEnabled(has and not busy)
+        self.history_act.setEnabled(has and not busy)
+        self.reset_act.setEnabled(has and not busy)
         self.progress.setVisible(busy)
         # edits while a step runs would be overwritten when the step saves the page
         self.panel.setEnabled(not busy)
@@ -936,6 +945,52 @@ class MainWindow(QMainWindow):
 
         ExportDialog(self).exec()
         self._refresh_page_labels()
+
+    # ---- page history and reset
+    def _pages_menu(self, pos):
+        if not self.images or self.pages.itemAt(pos) is None:
+            return
+        menu = QMenu(self)
+        menu.addActions([self.all_act, self.history_act, self.reset_act])
+        menu.exec(self.pages.viewport().mapToGlobal(pos))
+
+    def _reload_page(self, path: Path, doc: PageDoc):
+        self.docs[path] = doc
+        if path == self._current_path:
+            self.doc = doc
+            self.undo_stack.clear()
+            self.redo_stack.clear()
+            self.selected = None
+            self.reload(layer="final" if doc.final_path.exists() else "original")
+        self._refresh_page_labels()
+
+    def open_history(self):
+        if not self.doc or self.busy:
+            return
+        from .history_dialog import HistoryDialog
+
+        dlg = HistoryDialog(self, self.doc)
+        if dlg.exec() and dlg.restored is not None:
+            self._reload_page(self._current_path, dlg.restored)
+            self._autosave_timer.start()
+            self.statusBar().showMessage("คืนค่าเวอร์ชันแล้ว (สภาพก่อนคืนค่าเก็บไว้ในประวัติ)", 6000)
+
+    def reset_pages(self):
+        if not self.doc or self.busy:
+            return
+        rows = sorted({i.row() for i in self.pages.selectedIndexes()}) or [self.pages.currentRow()]
+        rows = [r for r in rows if r >= 0]
+        names = ", ".join(self.images[r].name for r in rows[:3]) + (" …" if len(rows) > 3 else "")
+        if QMessageBox.question(
+                self, "รีเซ็ตเป็นต้นฉบับ",
+                f"ล้างกล่อง คำแปล และภาพที่ลบคำแล้วของ {len(rows)} หน้า ({names})?\n"
+                "ภาพต้นฉบับไม่ถูกแตะ และสภาพตอนนี้จะถูกเก็บไว้ในประวัติ จึงคืนค่ากลับมาได้") != QMessageBox.StandardButton.Yes:
+            return
+        for r in rows:
+            path = self.images[r]
+            self.failed.pop(path.stem, None)
+            self._reload_page(path, versions.reset(self._doc_for(r), self.settings.versions_keep))
+        self.statusBar().showMessage(f"รีเซ็ต {len(rows)} หน้าแล้ว (ดูหรือคืนค่าได้ที่ ประวัติของหน้านี้)", 6000)
 
     def open_info(self):
         from .info_dialog import InfoDialog

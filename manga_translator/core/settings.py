@@ -27,6 +27,7 @@ class Settings:
     page_sort: str = "name"  # name | mtime | size | manual
     page_sort_desc: bool = False
     skip_done: bool = True  # batch runs skip pages that finished every step
+    versions_keep: int = 10  # page history: snapshots kept per page
     # saving (preset for auto-save and the Export dialog); {ตอน} = chapter (source folder) name
     save_dir: str = ""
     autosave: bool = False

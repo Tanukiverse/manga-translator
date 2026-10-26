@@ -89,6 +89,13 @@ class SettingsDialog(QDialog):
         crow.addStretch()
         form.addRow("สีเริ่มต้น", crow)
 
+        self.versions_keep = QSpinBox()
+        self.versions_keep.setRange(1, 50)
+        self.versions_keep.setValue(settings.versions_keep)
+        self.versions_keep.setSuffix(" รายการต่อหน้า")
+        self.versions_keep.setToolTip("ประวัติที่ใช้ย้อนกลับไปผลก่อนหน้า ไฟล์ที่ไม่เปลี่ยนไม่กินพื้นที่ซ้ำ")
+        form.addRow("เก็บประวัติ", self.versions_keep)
+
         self.ui_size = QSpinBox()
         self.ui_size.setRange(9, 18)
         self.ui_size.setValue(settings.ui_font_size)
@@ -215,6 +222,7 @@ class SettingsDialog(QDialog):
         s.outline_color = self.outline.value
         s.use_gpu = self.gpu.isChecked()
         s.ui_font_size = self.ui_size.value()
+        s.versions_keep = self.versions_keep.value()
         s.glossary = parse_glossary(self.glossary.toPlainText())
         s.story_notes = self.notes.toPlainText().strip()
         s.autosave = self.autosave.isChecked()

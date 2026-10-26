@@ -10,6 +10,7 @@ import traceback
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
+from ..core import versions
 from ..core.pipeline import RUNNERS, STEP_LABELS, Models
 
 
@@ -37,9 +38,17 @@ class StepRunner(QObject):
         """Run steps on each page in order. A failing page is reported and skipped; the rest go on."""
         self._cancel = False
         failed = []
+        what = "ทำทั้งหมด" if list(steps) == list(RUNNERS) else ", ".join(STEP_LABELS[s] for s in steps)
         for n, doc in enumerate(docs, 1):
             name = doc.folder.name
             self.page_started.emit(n, len(docs), name)
+            # keep the page as it was, so a worse new result can be undone from its history;
+            # a failed snapshot (disk full, locked file) must not stop the translation itself
+            try:
+                keep = getattr(getattr(self.models, "settings", None), "versions_keep", versions.DEFAULT_KEEP)
+                versions.snapshot(doc, f"ก่อน: {what}", keep)
+            except Exception:
+                traceback.print_exc()
             try:
                 for step in steps:
                     if self._cancel:
