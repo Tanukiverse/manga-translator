@@ -18,6 +18,7 @@ MANIFEST = MODELS / "manifest.json"
 FILES = {
     "comictextdetector.pt.onnx": "https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/comictextdetector.pt.onnx",
     "big-lama.pt": "https://github.com/enesmsahin/simple-lama-inpainting/releases/download/v0.1.0/big-lama.pt",
+    "en_PP-OCRv3_rec_infer.onnx": "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv3/en_PP-OCRv3_rec_infer.onnx",
 }
 HF_REPOS = {"manga-ocr-base": "kha-white/manga-ocr-base"}
 

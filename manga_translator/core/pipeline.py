@@ -146,11 +146,17 @@ def run_detect(doc: PageDoc, models: Models, progress: Progress | None = None) -
 
 def run_ocr(doc: PageDoc, models: Models, progress: Progress | None = None) -> None:
     img = doc.load_original()
+    mask = doc.load_layer("mask")
     engine = models.ocr(doc.source_lang)
     todo = [r for r in doc.regions if not r.locked]
     for n, r in enumerate(todo, 1):
-        r.source_text = engine(img, r.bbox)
+        r.source_text = engine(img, r.bbox, mask)
         _log(progress, f"อ่านข้อความ {n}/{len(todo)}")
+    if doc.source_lang == "en":
+        from .ocr import uppercase_page
+
+        for r, t in zip(todo, uppercase_page([r.source_text for r in todo])):
+            r.source_text = t
     _invalidate_after(doc, "ocr")
     doc.done["ocr"] = True
     doc.save()

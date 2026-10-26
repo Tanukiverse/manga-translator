@@ -1,4 +1,5 @@
 {
   "comictextdetector.pt.onnx": "1a86ace74961413cbd650002e7bb4dcec4980ffa21b2f19b86933372071d718f",
-  "big-lama.pt": "7ba7aa7ac37a4d41fdbbeba3a2af7ead18058552997e3a3cd1a3b2210c9e6b4c"
+  "big-lama.pt": "7ba7aa7ac37a4d41fdbbeba3a2af7ead18058552997e3a3cd1a3b2210c9e6b4c",
+  "en_PP-OCRv3_rec_infer.onnx": "ef7abd8bd3629ae57ea2c28b425c1bd258a871b93fd2fe7c433946ade9b5d9ea"
 }

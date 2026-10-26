@@ -42,6 +42,10 @@ def test_english_tokens_keep_spaces():
 
 def test_bubble_rect_inside_bubble(ja_page):
     img, truth = ja_page
+    img = img.copy()
+    for t in truth:  # layout runs on the cleaned page: remove the source text first
+        x, y, w, h = t.bbox
+        img[y:y + h, x:x + w] = 255
     for t in truth:
         rx, ry, rw, rh = bubble_rect(img, t.bbox)
         bx, by, bw, bh = t.bubble
@@ -58,3 +62,38 @@ def test_render_draws_inside_box_only():
     assert len(ink) > 50
     assert ink[:, 0].min() >= 50 and ink[:, 0].max() < 170
     assert ink[:, 1].min() >= 50 and ink[:, 1].max() < 250
+
+
+def _spiky_bubble():
+    import cv2
+
+    img = np.full((1000, 1000, 3), 120, np.uint8)  # page-sized: a bubble is a small part of it
+    pts = []
+    for i in range(24):  # star-shaped "shout" bubble: long spikes, round core
+        ang = i * np.pi / 12
+        rad = 170 if i % 2 else 110
+        pts.append([500 + rad * np.cos(ang), 500 + rad * np.sin(ang)])
+    cv2.fillPoly(img, [np.array(pts, np.int32)], (255, 255, 255))
+    cv2.polylines(img, [np.array(pts, np.int32)], True, (0, 0, 0), 3)
+    return img
+
+
+def test_inner_rect_stays_inside_spiky_bubble():
+    from manga_translator.core.typeset import bubble_rects
+
+    img = _spiky_bubble()
+    inner, loose = bubble_rects(img, [470, 480, 60, 40])
+    x, y, w, h = inner
+    assert (img[y:y + h, x:x + w] == 255).all()  # no outline or background inside
+    assert w > 100 and h > 100  # but uses the round core, not just the text box
+    assert loose[2] > w  # loose box reaches into the spikes
+
+
+def test_long_text_in_tiny_bubble_stays_readable_and_whole():
+    from manga_translator.core.typeset import choose_layout, min_size_for
+
+    shape = (1761, 1200)
+    rect, lay, spilled = choose_layout("ผู้บัญชาการ!", "th", "Leelawadee UI", (0, 0, 30, 50), (0, 0, 37, 60), 0, shape)
+    assert lay.size >= min_size_for(shape)
+    assert lay.lines == ["ผู้บัญชาการ!"]  # not broken inside the word
+    assert spilled

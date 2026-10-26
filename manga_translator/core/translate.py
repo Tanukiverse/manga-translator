@@ -17,6 +17,9 @@ LANG_NAMES = {
 }
 
 
+SHORT_CHARS = 10  # source bubbles with at most this many letters get a "short" hint
+
+
 @dataclass
 class TranslatorConfig:
     url: str = "http://localhost:11434"
@@ -38,7 +41,9 @@ def build_messages(lines: list[tuple[int, str]], src: str, tgt: str, cfg: Transl
         f"You are a professional manga translator. Translate speech bubbles from {src_name} into natural, "
         f"conversational {tgt_name} that fits each character's voice. The bubbles are given in reading order "
         "and belong to the same page, so use the surrounding lines as context. Keep sound effects short. "
-        "Do not add explanations, notes or romanization. Translate every id exactly once."
+        "Do not add explanations, notes or romanization. Translate every id exactly once. "
+        "Keep each translation about as long as the original: bubbles marked \"short\": true are tiny, "
+        "so answer those in one to three words."
     )
     if tgt == "th":
         system += " Use Thai particles (ครับ/ค่ะ/นะ/จ้ะ) only where they fit the speaker; keep lines short so they fit a bubble."
@@ -47,7 +52,13 @@ def build_messages(lines: list[tuple[int, str]], src: str, tgt: str, cfg: Transl
         system += f"\nAlways use these fixed translations:\n{terms}"
     if cfg.notes:
         system += f"\nStory context: {cfg.notes}"
-    user = json.dumps({"bubbles": [{"id": i, "text": t} for i, t in lines]}, ensure_ascii=False)
+    bubbles = []
+    for i, t in lines:
+        b = {"id": i, "text": t}
+        if sum(c.isalnum() for c in t) <= SHORT_CHARS:
+            b["short"] = True
+        bubbles.append(b)
+    user = json.dumps({"bubbles": bubbles}, ensure_ascii=False)
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 

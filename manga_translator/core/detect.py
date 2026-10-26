@@ -15,7 +15,7 @@ import numpy as np
 from .paths import MODELS_DIR
 
 INPUT_SIZE = 1024
-CONF_THRESH = 0.4
+CONF_THRESH = 0.25  # 0.4 missed a real "KOU!" bubble (score 0.31); 0.2 added nothing false on that page
 NMS_THRESH = 0.35
 MASK_THRESH = 0.3
 

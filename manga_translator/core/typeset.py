@@ -143,10 +143,11 @@ class Layout:
     lines: list[str]
     line_height: float
     fits: bool
+    broke: bool = False  # a word had to be split across lines
 
 
 def fit_text(text: str, lang: str, family: str, rect_w: float, rect_h: float, fixed_size: int = 0,
-             max_size: int = MAX_SIZE) -> Layout:
+             max_size: int = MAX_SIZE, min_size: int = MIN_SIZE) -> Layout:
     ensure_qt()
     from PySide6.QtGui import QFont, QFontMetricsF
 
@@ -160,13 +161,13 @@ def fit_text(text: str, lang: str, family: str, rect_w: float, rect_h: float, fi
         lh = fm.height() * LINE_SPACING
         widest = max((fm.horizontalAdvance(l) for l in lines), default=0)
         fits = widest <= rect_w + 0.5 and lh * len(lines) <= rect_h and (allow_break or not broke)
-        return Layout(size, lines, lh, fits)
+        return Layout(size, lines, lh, fits, broke)
 
     if fixed_size:
         return layout(fixed_size, True)
 
     def search(allow_break: bool) -> Layout | None:
-        lo, hi = MIN_SIZE, max(MIN_SIZE, min(max_size, int(rect_h)))
+        lo, hi = min_size, max(min_size, min(max_size, int(rect_h)))
         best = None
         while lo <= hi:
             mid = (lo + hi) // 2
@@ -178,33 +179,120 @@ def fit_text(text: str, lang: str, family: str, rect_w: float, rect_h: float, fi
         return best
 
     # prefer whole words; break inside a word only when nothing else fits
-    return search(False) or search(True) or layout(MIN_SIZE, True)
+    return search(False) or search(True) or layout(min_size, True)
 
 
-def bubble_rect(img_bgr: np.ndarray, bbox, tol: int = 24) -> tuple[int, int, int, int]:
-    """Usable text rectangle: the bubble the box sits in (flood fill from its centre), shrunk to its interior.
-
-    Falls back to the box itself when the fill leaks into the page (no closed bubble).
-    """
+def _bubble_mask(img_bgr: np.ndarray, bbox, tol: int = 24) -> np.ndarray | None:
+    """Interior of the bubble the box sits in (flood fill from the box centre on the cleaned page),
+    or None when there is no closed light bubble (the fill leaks into the page)."""
     x, y, w, h = bbox
     H, W = img_bgr.shape[:2]
     cx, cy = min(W - 1, x + w // 2), min(H - 1, y + h // 2)
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     if gray[cy, cx] < 128:
-        return tuple(bbox)
+        return None
     ff = np.zeros((H + 2, W + 2), np.uint8)
     flags = 4 | cv2.FLOODFILL_MASK_ONLY | cv2.FLOODFILL_FIXED_RANGE | (255 << 8)
-    cv2.floodFill(gray.copy(), ff, (cx, cy), 0, tol, tol, flags)
+    cv2.floodFill(gray, ff, (cx, cy), 0, tol, tol, flags)
     region = ff[1:-1, 1:-1]
     ys, xs = np.nonzero(region)
     bx0, by0, bx1, by1 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
     bw, bh = bx1 - bx0, by1 - by0
-    if bw * bh > 20 * max(1, w * h) or bw >= W * 0.9 or bh >= H * 0.9 or bx0 > x + 2 or by0 > y + 2:
-        return tuple(bbox)
-    # an ellipse's largest inscribed rectangle is ~70% of its bounding box per side
-    fill_ratio = region.sum() / 255 / (bw * bh)
-    k = 0.15 if fill_ratio < 0.9 else 0.06
-    return (int(bx0 + bw * k), int(by0 + bh * k), int(bw * (1 - 2 * k)), int(bh * (1 - 2 * k)))
+    # a short word in a big bubble is normal; a fill covering much of the page is a leak
+    if bw * bh > 0.25 * W * H or bw >= W * 0.9 or bh >= H * 0.9 or bx0 > x + 2 or by0 > y + 2:
+        return None
+    return region
+
+
+def _inscribed_rect(region: np.ndarray, cx: int, cy: int) -> tuple[int, int, int, int]:
+    """Grow a rectangle from (cx, cy) one side at a time while it stays inside the region.
+    Unlike the bounding box, this ignores spikes and tails of jagged bubbles."""
+    outside = cv2.integral((region == 0).astype(np.uint8))
+
+    def bad(x0, y0, x1, y1):
+        return outside[y1, x1] - outside[y0, x1] - outside[y1, x0] + outside[y0, x0]
+
+    H, W = region.shape
+    x0, y0, x1, y1 = cx, cy, cx + 1, cy + 1
+    for step in (8, 2, 1):
+        grew = True
+        while grew:
+            grew = False
+            if x0 - step >= 0 and bad(x0 - step, y0, x0, y1) <= 0.02 * step * (y1 - y0):
+                x0 -= step
+                grew = True
+            if x1 + step <= W and bad(x1, y0, x1 + step, y1) <= 0.02 * step * (y1 - y0):
+                x1 += step
+                grew = True
+            if y0 - step >= 0 and bad(x0, y0 - step, x1, y0) <= 0.02 * step * (x1 - x0):
+                y0 -= step
+                grew = True
+            if y1 + step <= H and bad(x0, y1, x1, y1 + step) <= 0.02 * step * (x1 - x0):
+                y1 += step
+                grew = True
+    return x0, y0, x1 - x0, y1 - y0
+
+
+def _shrink(rect, ratio: float, min_px: int = 2) -> tuple[int, int, int, int]:
+    x, y, w, h = rect
+    dx, dy = max(min_px, int(w * ratio)), max(min_px, int(h * ratio))
+    if w - 2 * dx < 4 or h - 2 * dy < 4:
+        return (int(x), int(y), int(w), int(h))
+    return (int(x + dx), int(y + dy), int(w - 2 * dx), int(h - 2 * dy))
+
+
+def bubble_rects(img_bgr: np.ndarray, bbox) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
+    """(inner, loose) text rectangles for a region.
+
+    inner: largest rectangle grown inside the bubble from the box centre, with a margin.
+    loose: the bubble's bounding box with a small margin; used when text will not fit inside.
+    Both fall back to the box itself when there is no closed bubble.
+    """
+    region = _bubble_mask(img_bgr, bbox)
+    if region is None:
+        return tuple(bbox), tuple(bbox)
+    x, y, w, h = bbox
+    ys, xs = np.nonzero(region)
+    loose = _shrink((xs.min(), ys.min(), xs.max() + 1 - xs.min(), ys.max() + 1 - ys.min()), 0.04)
+    cx, cy = x + w // 2, y + h // 2
+    if not region[cy, cx]:
+        return tuple(bbox), loose
+    inner = _shrink(_inscribed_rect(region, cx, cy), 0.06)
+    if inner[2] * inner[3] < 0.5 * w * h:
+        inner = tuple(bbox)
+    return inner, loose
+
+
+def bubble_rect(img_bgr: np.ndarray, bbox) -> tuple[int, int, int, int]:
+    return bubble_rects(img_bgr, bbox)[0]
+
+
+def min_size_for(page_shape) -> int:
+    """Smallest auto font size that stays readable on this page."""
+    return max(MIN_SIZE, round(min(page_shape[:2]) * 0.011))
+
+
+def choose_layout(text: str, lang: str, family: str, inner, loose, fixed_size: int, page_shape):
+    """Pick (rect, layout, overflow): inside the bubble at a readable size if possible, then the
+    looser bubble box, then a readable size spilling past the bubble (drawn with a halo)."""
+    floor, cap = min_size_for(page_shape), max_size_for(page_shape)
+    if fixed_size:
+        lay = fit_text(text, lang, family, inner[2], inner[3], fixed_size)
+        return inner, lay, not lay.fits
+    for rect in (inner, loose):
+        lay = fit_text(text, lang, family, rect[2], rect[3], 0, cap, floor)
+        if lay.fits and not lay.broke:
+            return rect, lay, False
+    # too long for the bubble: keep it readable and let it spill sideways, centred on the bubble
+    x, y, w, h = loose
+    for widen in (1.3, 1.6, 2.0, 2.6, 3.2):
+        nw = int(w * widen)
+        rect = (int(x + w / 2 - nw / 2), y, nw, h)
+        lay = fit_text(text, lang, family, rect[2], rect[3], 0, cap, floor)
+        if lay.fits and not lay.broke:
+            return rect, lay, True
+    lay = fit_text(text, lang, family, loose[2], loose[3], 0, cap)
+    return loose, lay, True
 
 
 def render(cleaned_bgr: np.ndarray, regions, lang: str, default_family: str = "") -> tuple[np.ndarray, list[int]]:
@@ -226,10 +314,10 @@ def render(cleaned_bgr: np.ndarray, regions, lang: str, default_family: str = ""
         text = (r.translation or "").strip()
         if not text:
             continue
-        rx, ry, rw, rh = bubble_rect(cleaned_bgr, r.bbox)
+        inner, loose = bubble_rects(cleaned_bgr, r.bbox)
         family = r.font_family or family_default
-        lay = fit_text(text, lang, family, rw, rh, r.font_size, max_size_for(cleaned_bgr.shape))
-        if not lay.fits:
+        (rx, ry, rw, rh), lay, spilled = choose_layout(text, lang, family, inner, loose, r.font_size, cleaned_bgr.shape)
+        if spilled or not lay.fits:
             overflow.append(r.id)
         font = QFont(family)
         font.setPixelSize(lay.size)
@@ -249,8 +337,9 @@ def render(cleaned_bgr: np.ndarray, regions, lang: str, default_family: str = ""
                 lx = rx + (rw - lw) / 2
             baseline = top + i * lay.line_height + (lay.line_height - fm.height()) / 2 + fm.ascent()
             path.addText(QPointF(lx, baseline), font, line)
-        if r.outline:
-            pen = QPen(QColor(r.outline), max(2.0, lay.size / 7))
+        halo = r.outline or ("#ffffff" if spilled else "")  # text spilling onto artwork needs a halo
+        if halo:
+            pen = QPen(QColor(halo), max(2.0, lay.size / 7))
             pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
             painter.strokePath(path, pen)
         painter.fillPath(path, QColor(r.color or "#000000"))
