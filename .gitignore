@@ -9,3 +9,4 @@ work/
 *.part
 .scratch/
 settings.json
+logs/

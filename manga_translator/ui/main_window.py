@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, Slot
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -34,7 +34,7 @@ from ..core.translate import LANG_NAMES
 from .canvas import MODE_ADD, MODE_ERASE, MODE_PAINT, MODE_SELECT, Canvas, to_qimage
 from .region_panel import RegionPanel
 from .settings_dialog import SettingsDialog
-from .worker import StepWorker, start_worker
+from .worker import AIWorker
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 SOURCE_LANGS = ["ja", "en"]
@@ -57,8 +57,13 @@ class MainWindow(QMainWindow):
         self.selected: int | None = None
         self.undo_stack: list[tuple] = []
         self.redo_stack: list[tuple] = []
-        self.thread = None
-        self.worker = None
+        self.busy = False
+        self.ai = AIWorker(self.models)
+        # bound methods, not lambdas: a lambda has no receiver object, so Qt would call it on
+        # the AI thread and touch widgets there (crash in Qt6Core.dll)
+        self.ai.runner.progress.connect(self._on_progress)
+        self.ai.runner.step_done.connect(self._step_done)
+        self.ai.runner.finished.connect(self._finished)
         self._build()
         self._update_actions()
 
@@ -285,7 +290,7 @@ class MainWindow(QMainWindow):
         self.canvas.set_show_boxes(self.layer != "final" or mode != MODE_SELECT)
 
     def _update_actions(self):
-        busy = self.thread is not None
+        busy = self.busy
         has = self.doc is not None
         for a in self.step_actions.values():
             a.setEnabled(has and not busy)
@@ -404,28 +409,30 @@ class MainWindow(QMainWindow):
 
     # ========================================================= pipeline
     def run_steps(self, steps: list[str], docs: list[PageDoc] | None = None):
-        if not self.doc or self.thread:
+        if not self.doc or self.busy:
             return
         self.panel._commit_pending()
         docs = docs or [self.doc]
         for d in docs:
             d.source_lang, d.target_lang = self._src(), self._tgt()
-        self.worker = StepWorker(self.models, docs, steps)
-        self.worker.progress.connect(lambda m: self.statusBar().showMessage(m))
-        self.worker.step_done.connect(self._step_done)
-        self.worker.finished.connect(self._finished)
-        self.thread = start_worker(self, self.worker)
+        self.busy = True
         self._update_actions()
+        self.ai.submit(docs, list(steps))
 
     def run_all_pages(self):
         docs = [self._doc_for(i) for i in range(len(self.images))]
         self.run_steps(STEPS, docs)
 
     def cancel(self):
-        if self.worker:
-            self.worker.cancel()
+        if self.busy:
+            self.ai.cancel()
             self.statusBar().showMessage("กำลังหยุดหลังขั้นตอนปัจจุบัน …")
 
+    @Slot(str)
+    def _on_progress(self, msg: str):
+        self.statusBar().showMessage(msg)
+
+    @Slot(str)
     def _step_done(self, step: str):
         layer = {"clean": "cleaned", "typeset": "final"}.get(step, self.layer)
         self.doc = PageDoc.load(self.doc.folder) if self.doc else None
@@ -433,9 +440,9 @@ class MainWindow(QMainWindow):
             self.docs[self.images[self.pages.currentRow()]] = self.doc
         self.reload(layer=layer)
 
+    @Slot(bool, str)
     def _finished(self, ok: bool, error: str):
-        self.thread = None
-        self.worker = None
+        self.busy = False
         # worker threads saved their own PageDoc copies; reload every open page from disk
         for p, d in list(self.docs.items()):
             self.docs[p] = PageDoc.load(d.folder)
@@ -476,8 +483,5 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("บันทึกการตั้งค่าแล้ว", 4000)
 
     def closeEvent(self, e):
-        if self.thread:
-            self.worker.cancel()
-            self.thread.quit()
-            self.thread.wait(3000)
+        self.ai.stop()
         super().closeEvent(e)

@@ -13,6 +13,8 @@ from PySide6.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from manga_translator import crashlog  # noqa: E402
+crashlog.install()
 from manga_translator.core.pipeline import STEPS  # noqa: E402
 from manga_translator.ui.main_window import MainWindow  # noqa: E402
 
@@ -39,9 +41,12 @@ def main() -> int:
     assert win.doc is not None, "no page opened"
 
     errors = []
-    win.run_steps(STEPS)
-    win.worker.finished.connect(lambda ok, err: errors.append(err) if not ok else None)
-    wait_until(app, lambda: win.thread is None)
+    win.ai.runner.finished.connect(lambda ok, err: errors.append(err) if not ok else None)
+    # one step per click, like a user: separate runs used to crash onnxruntime
+    for step in STEPS:
+        win.run_steps([step])
+        wait_until(app, lambda: not win.busy)
+        assert not errors, (step, errors)
     assert not errors, errors
     assert win.doc.final_path.exists(), "final.png missing"
     assert all(win.doc.done.get(s) for s in STEPS), win.doc.done

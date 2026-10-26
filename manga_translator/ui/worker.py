@@ -1,31 +1,37 @@
-"""Runs pipeline steps off the UI thread."""
+"""One long-lived AI thread that runs every pipeline step, so all models load and run on it.
+
+Connect the runner's signals only to bound methods of QObjects (e.g. the main window), never
+to lambdas: a lambda has no receiver, so Qt runs it on the AI thread, and touching widgets
+there crashed the app inside Qt6Core.dll.
+"""
 from __future__ import annotations
 
 import traceback
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from ..core.pipeline import RUNNERS, STEP_LABELS, Models
-from ..core.project import PageDoc
 
 
-class StepWorker(QObject):
+class StepRunner(QObject):
     progress = Signal(str)
     step_done = Signal(str)
     finished = Signal(bool, str)  # ok, error message
 
-    def __init__(self, models: Models, docs: list[PageDoc], steps: list[str]):
+    def __init__(self, models: Models):
         super().__init__()
-        self.models, self.docs, self.steps = models, docs, steps
+        self.models = models
         self._cancel = False
 
     def cancel(self):
-        self._cancel = True
+        self._cancel = True  # read by the AI thread between steps
 
-    def run(self):
+    @Slot(list, list)
+    def run(self, docs: list, steps: list):
+        self._cancel = False
         try:
-            for doc in self.docs:
-                for step in self.steps:
+            for doc in docs:
+                for step in steps:
                     if self._cancel:
                         self.finished.emit(False, "ยกเลิกแล้ว")
                         return
@@ -38,12 +44,25 @@ class StepWorker(QObject):
             self.finished.emit(False, str(e))
 
 
-def start_worker(parent, worker: StepWorker) -> QThread:
-    thread = QThread(parent)
-    worker.moveToThread(thread)
-    thread.started.connect(worker.run)
-    worker.finished.connect(thread.quit)
-    thread.finished.connect(worker.deleteLater)
-    thread.finished.connect(thread.deleteLater)
-    thread.start()
-    return thread
+class AIWorker(QObject):
+    _submit = Signal(list, list)
+
+    def __init__(self, models: Models):
+        super().__init__()
+        self.thread = QThread()
+        self.thread.setObjectName("ai")
+        self.runner = StepRunner(models)
+        self.runner.moveToThread(self.thread)
+        self._submit.connect(self.runner.run)  # queued: runs on the AI thread
+        self.thread.start()
+
+    def submit(self, docs: list, steps: list):
+        self._submit.emit(docs, steps)
+
+    def cancel(self):
+        self.runner.cancel()
+
+    def stop(self, timeout_ms: int = 5000):
+        self.runner.cancel()
+        self.thread.quit()
+        self.thread.wait(timeout_ms)

@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtGui import QFont
+from . import crashlog
+
+crashlog.install()  # before heavy imports, so their output has somewhere to go
+
+from PySide6.QtGui import QFont  # noqa: E402
 from PySide6.QtWidgets import QApplication
 
-from .core.typeset import ensure_qt
-from .ui.main_window import MainWindow
+from .core.typeset import ensure_qt  # noqa: E402
+from .ui.main_window import MainWindow  # noqa: E402
 
 
 def main() -> int:
