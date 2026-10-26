@@ -531,7 +531,15 @@ class MainWindow(QMainWindow):
         self.panel.refresh_label(r)
         if "text_rect" in fields and self.panel.current == rid:
             self.panel.auto_place.setEnabled(bool(r.text_rect))
-        self.canvas.items_by_id.get(rid) and self.canvas.items_by_id[rid].set_style(r.locked)
+        self.canvas.items_by_id.get(rid) and self.canvas.items_by_id[rid].set_style(r.locked, r.skip)
+        if "skip" in fields and self.doc.cleaned_path.exists():
+            # the removal area changed: redo "remove text" and "typeset" on the AI thread
+            if "locked" in fields and self.panel.current == rid:
+                self.panel.locked.blockSignals(True)
+                self.panel.locked.setChecked(True)
+                self.panel.locked.blockSignals(False)
+            QTimer.singleShot(0, lambda: self.run_steps(["clean", "typeset"]))
+            return
         # live preview: re-typeset when the cleaned layer exists (fast, no AI)
         if self.doc.cleaned_path.exists() and any(k in fields for k in ("translation", "font_family", "font_size", "color",
                                                                         "outline", "align", "text_rect", "wrap")):

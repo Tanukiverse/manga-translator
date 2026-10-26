@@ -6,6 +6,7 @@ from __future__ import annotations
 import gc
 from typing import Callable
 
+import cv2
 import numpy as np
 
 from .project import PageDoc, Region
@@ -117,6 +118,24 @@ def _log(progress: Progress | None, msg: str) -> None:
         progress(msg)
 
 
+def keep_skipped(mask: np.ndarray, regions, pad: int = 6) -> np.ndarray:
+    """Remove "not text" boxes from the removal mask (but not where a real box overlaps them)."""
+    skipped = [r for r in regions if r.skip]
+    if not skipped:
+        return mask
+    mask = mask.copy()
+    keep = np.zeros(mask.shape, bool)
+    for r in regions:
+        if not r.skip:
+            x, y, w, h = r.bbox
+            keep[max(0, y - pad):y + h + pad, max(0, x - pad):x + w + pad] = True
+    for r in skipped:
+        x, y, w, h = r.bbox
+        sl = (slice(max(0, y - pad), y + h + pad), slice(max(0, x - pad), x + w + pad))
+        mask[sl][~keep[sl]] = 0
+    return mask
+
+
 def _invalidate_after(doc: PageDoc, step: str) -> None:
     for s in STEPS[STEPS.index(step):]:
         doc.done[s] = False
@@ -127,6 +146,11 @@ def run_detect(doc: PageDoc, models: Models, progress: Progress | None = None) -
 
     img = doc.load_original()
     dets, mask = models.detector(img)
+    if doc.source_lang != "ja":  # horizontal text: split boxes holding two blocks side by side
+        from .detect import Detection, split_side_by_side
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        dets = [Detection(b, d.score) for d in dets for b in split_side_by_side(d.bbox, mask, gray)]
     locked = [r for r in doc.regions if r.locked]
     # keep locked regions; drop new detections that overlap them
     fresh = [d for d in dets if not any(_iou(d.bbox, r.bbox) > 0.3 for r in locked)]
@@ -170,6 +194,14 @@ def run_ocr(doc: PageDoc, models: Models, progress: Progress | None = None) -> N
 
         for r, t in zip(todo, uppercase_page([r.source_text for r in todo])):
             r.source_text = t
+    from .ocr import is_junk_english
+
+    for r in todo:
+        # nothing readable, or noise from art/SFX: leave the original pixels alone
+        r.skip = not r.source_text.strip() or (doc.source_lang == "en" and is_junk_english(r.source_text))
+    skipped = sum(r.skip for r in todo)
+    if skipped:
+        _log(progress, f"ข้าม {skipped} กล่องที่ไม่ใช่ข้อความ (ไม่ลบ ไม่แปล)")
     _invalidate_after(doc, "ocr")
     doc.done["ocr"] = True
     doc.save()
@@ -177,7 +209,7 @@ def run_ocr(doc: PageDoc, models: Models, progress: Progress | None = None) -> N
 
 def run_translate(doc: PageDoc, models: Models, progress: Progress | None = None) -> None:
     translator = models.translator()
-    lines = [(r.id, r.source_text) for r in doc.regions if r.source_text.strip()]
+    lines = [(r.id, r.source_text) for r in doc.regions if r.source_text.strip() and not r.skip]
     _log(progress, f"กำลังแปล {len(lines)} กล่องด้วย {translator.cfg.model} …")
     result = translator.translate(lines, doc.source_lang, doc.target_lang)
     for r in doc.regions:
@@ -200,6 +232,7 @@ def run_clean(doc: PageDoc, models: Models, progress: Progress | None = None) ->
     mask = doc.load_layer("mask")
     if mask is None:
         mask = np.zeros(img.shape[:2], np.uint8)
+    mask = keep_skipped(mask, doc.regions)
     # load LaMa only when some blob actually needs it
     _, probe = clean(img, mask, lama=None)
     lama = models.lama if probe["telea"] else None

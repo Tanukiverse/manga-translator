@@ -118,6 +118,78 @@ def resolve_overlaps(dets: list[Detection], inside: float = 0.6) -> list[Detecti
     return [d for d in out if d.bbox[2] >= 4 and d.bbox[3] >= 4]
 
 
+def _flag_runs(flags, glue: int = 0) -> list[tuple[int, int]]:
+    """[start, end) runs of True values; runs separated by at most `glue` False values are joined
+    (faint lettering breaks into slivers that would otherwise read as tiny lines)."""
+    runs, start = [], None
+    for i, v in enumerate(flags):
+        if v and start is None:
+            start = i
+        elif not v and start is not None:
+            runs.append((start, i))
+            start = None
+    if start is not None:
+        runs.append((start, len(flags)))
+    joined: list[tuple[int, int]] = []
+    for a, b in runs:
+        if joined and a - joined[-1][1] <= glue:
+            joined[-1] = (joined[-1][0], b)
+        else:
+            joined.append((a, b))
+    return joined
+
+
+def split_side_by_side(bbox, mask: np.ndarray, gray: np.ndarray | None = None) -> list[tuple[int, int, int, int]]:
+    """Split a box holding two horizontal text blocks next to each other (two speech beats in one
+    bubble, or two neighbouring bubbles) at the empty column between them. Only for horizontal
+    text: vertical Japanese columns are separated by gaps by design."""
+    x, y, w, h = bbox
+    ink = mask[y:y + h, x:x + w] > 0
+    if gray is not None:
+        # the mask is dilated, which joins lines and narrows gaps: measure the dark lettering itself
+        ink &= gray[y:y + h, x:x + w] < 140
+    if not ink.any():
+        return [tuple(bbox)]
+    pieces = _flag_runs(ink.any(0))  # column runs between any empty columns (words, blocks)
+    # line height measured inside each piece: blocks starting at different heights would
+    # otherwise merge into one tall run of rows
+    heights = [b - a for c0, c1 in pieces for a, b in _flag_runs(ink[:, c0:c1].any(1), glue=3)]
+    # upper quartile, not median: in mixed-case fonts most letters are only x-height tall
+    line_h = sorted(heights)[(3 * len(heights)) // 4]
+    # word spaces are well under half a line high; a wider empty column separates blocks
+    min_gap = max(8, int(0.6 * line_h))
+    blocks = [list(pieces[0])]
+    for a, b in pieces[1:]:
+        if a - blocks[-1][1] < min_gap:
+            blocks[-1][1] = b
+        else:
+            blocks.append([a, b])
+    if len(blocks) < 2 or any(b - a < 2 * line_h for a, b in blocks):
+        return [tuple(bbox)]
+    # one paragraph whose word spaces happen to line up: every line of both parts sits at the
+    # same height. Separate speech beats start at different heights or have other line counts.
+    def lines(a, b):  # rows of ink, with slivers (accents, faint strokes) glued to their line
+        out = []
+        for r0, r1 in _flag_runs(ink[:, a:b].any(1)):
+            if out and r0 - out[-1][1] <= max(3, 0.25 * line_h):
+                out[-1] = (out[-1][0], r1)
+            else:
+                out.append((r0, r1))
+        return out
+
+    rows = [lines(a, b) for a, b in blocks]
+    tol = 0.4 * line_h
+    if all(len(r) == len(rows[0]) for r in rows) and all(
+            abs(r[k][0] - rows[0][k][0]) <= tol and abs(r[k][1] - rows[0][k][1]) <= tol
+            for r in rows[1:] for k in range(len(r))):
+        return [tuple(bbox)]
+    out = []
+    for a, b in blocks:
+        ys = np.nonzero(ink[:, a:b].any(1))[0]
+        out.append((x + a, y + int(ys.min()), b - a, int(ys.max()) + 1 - int(ys.min())))
+    return out
+
+
 def build_mask(prob: np.ndarray, dets: list[Detection], pad: int = 4, dilate: int = 3) -> np.ndarray:
     """Text mask from the segmentation map, kept only inside (slightly padded) detected boxes."""
     h, w = prob.shape

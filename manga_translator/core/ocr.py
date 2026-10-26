@@ -165,6 +165,28 @@ def _tight(ink: np.ndarray, line: tuple[int, int, int, int]) -> tuple[int, int, 
     return (a, b, c0 + int(cols.min()), c0 + int(cols.max()) + 1) if len(cols) else line
 
 
+# interjections that are real words without a vowel
+_VOWELLESS = re.compile(r"^(H+M+|M+|S+H+|Z+|G+R+|B+R+|T+S+K+|P+S+T+|N+|T+C+H+|P+F+T+|H+N+|C+H+)$")
+_SYMBOLS = set("$#@%^&*=+<>|{}[]~\\_")
+
+
+def is_junk_english(text: str) -> bool:
+    """True when English OCR read noise (sound effects, art, a Japanese page) instead of lettering,
+    e.g. "$7R6AH-7." or "S 6 MT 1 1 2 5". Punctuation-only bubbles ("?", "...") are real text."""
+    t = text.strip()
+    if not any(c.isalnum() for c in t):
+        return False
+    if any(c in _SYMBOLS for c in t):
+        return True
+    tokens = re.findall(r"[A-Za-z0-9']+", t)
+    if any(re.search(r"[A-Za-z]", w) and re.search(r"\d", w) for w in tokens):
+        return True  # letters and digits mixed in one word
+    words = [w.strip("'").upper() for w in tokens if w.strip("'").isalpha()]
+    real = [w for w in words if (len(w) >= 2 and (re.search(r"[AEIOUY]", w) or _VOWELLESS.match(w)))
+            or w in ("I", "A", "O")]
+    return not real
+
+
 def uppercase_page(texts: list[str]) -> list[str]:
     """Comic lettering is usually all caps for the whole page: a short bubble read as "KOu-uu!"
     is upper-cased when most letters on the page are capitals."""

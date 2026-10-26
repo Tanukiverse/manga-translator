@@ -122,6 +122,9 @@ class RegionPanel(QWidget):
 
         self.locked = QCheckBox("ล็อก (ขั้นอัตโนมัติจะไม่แก้กล่องนี้)")
         form.addRow("", self.locked)
+        self.skip = QCheckBox("ไม่ใช่ข้อความ (ไม่ลบ ไม่แปล ไม่วาดทับ)")
+        self.skip.setToolTip("เช่น เสียงประกอบหรือลายเส้นที่อ่านออกมาเป็นตัวมั่ว: ภาพเดิมตรงนี้จะคงไว้")
+        form.addRow("", self.skip)
         lay.addLayout(form)
 
         self.auto_place = QPushButton("วางข้อความอัตโนมัติ")
@@ -145,6 +148,8 @@ class RegionPanel(QWidget):
         self.color.changed.connect(lambda v: self._emit({"color": v}))
         self.outline.changed.connect(lambda v: self._emit({"outline": v}))
         self.locked.toggled.connect(lambda v: self._emit({"locked": v}))
+        # deciding by hand locks the box, so re-running OCR keeps the choice
+        self.skip.toggled.connect(lambda v: self._emit({"skip": v, "locked": True}))
         self.set_enabled(False)
 
     # ---- data in -----------------------------------------------------
@@ -167,7 +172,7 @@ class RegionPanel(QWidget):
     def _label(r) -> str:
         src = (r.source_text or "…").replace("\n", " ")[:24]
         tr = (r.translation or "").replace("\n", " ")[:24]
-        lock = "🔒 " if r.locked else ""
+        lock = ("⊘ " if r.skip else "") + ("🔒 " if r.locked else "")
         return f"{lock}{r.id}. {src}\n    → {tr}"
 
     def refresh_label(self, r):
@@ -205,6 +210,7 @@ class RegionPanel(QWidget):
         self.color.set_value(r.color or "#000000")
         self.outline.set_value(r.outline)
         self.locked.setChecked(r.locked)
+        self.skip.setChecked(r.skip)
         self.set_enabled(True)
         self.auto_place.setEnabled(bool(r.text_rect))
         self._loading = False
@@ -212,7 +218,7 @@ class RegionPanel(QWidget):
 
     def set_enabled(self, on: bool):
         for w in (self.source, self.translation, self.font_default, self.size, self.align, self.wrap,
-                  self.color, self.outline, self.locked, self.delete, self.auto_place):
+                  self.color, self.outline, self.locked, self.skip, self.delete, self.auto_place):
             w.setEnabled(on)
         self.font.setEnabled(on and not self.font_default.isChecked())
 

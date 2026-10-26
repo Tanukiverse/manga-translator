@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 
 import requests
@@ -69,7 +70,9 @@ def build_messages(lines: list[tuple[int, str]], src: str, tgt: str, cfg: Transl
         "so answer those in one to three words."
     )
     if tgt == "th":
-        system += " Use Thai particles (ครับ/ค่ะ/นะ/จ้ะ) only where they fit the speaker; keep lines short so they fit a bubble."
+        system += (" Use Thai particles (ครับ, ค่ะ, นะ, จ้ะ) only where they fit the speaker; keep lines short so they "
+                   "fit a bubble. Never write alternatives with a slash such as ค่ะ/ครับ or ผม/ฉัน: decide who is "
+                   "speaking from the page, and if you cannot tell, end the line without ครับ or ค่ะ.")
     if cfg.glossary:
         terms = "\n".join(f"- {k} => {v}" for k, v in cfg.glossary.items())
         system += f"\nAlways use these fixed translations:\n{terms}"
@@ -194,6 +197,14 @@ class OllamaTranslator:
             pass
 
 
+_ALTERNATIVES = re.compile(r"\s*\(?\s*(ครับ|ค่ะ|คะ|ผม|ฉัน|ดิฉัน|นะครับ|นะคะ)\s*/\s*(ครับ|ค่ะ|คะ|ผม|ฉัน|ดิฉัน|นะครับ|นะคะ)\s*\)?")
+
+
+def pick_one(text: str) -> str:
+    """'ไปกันเถอะค่ะ/ครับ' -> 'ไปกันเถอะค่ะ': a speech bubble has one speaker."""
+    return _ALTERNATIVES.sub(lambda m: m.group(1), text)
+
+
 def parse_response(content: str) -> dict[int, str]:
     content = content.strip()
     if content.startswith("```"):
@@ -207,12 +218,12 @@ def parse_response(content: str) -> dict[int, str]:
         # free JSON mode may answer {"1": "...", "2": "..."} instead of the schema
         for k, v in data.items():
             if str(k).isdigit() and isinstance(v, str):
-                out[int(k)] = " ".join(v.split())
+                out[int(k)] = pick_one(" ".join(v.split()))
         return out
     for item in data.get("translations", []):
         try:
             # the model's own line breaks would act as forced breaks; layout wraps by itself
-            out[int(item["id"])] = " ".join(str(item["text"]).split())
+            out[int(item["id"])] = pick_one(" ".join(str(item["text"]).split()))
         except (KeyError, TypeError, ValueError):
             continue
     return out

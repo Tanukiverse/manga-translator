@@ -370,7 +370,7 @@ def render(cleaned_bgr: np.ndarray, regions, lang: str, default_family: str = ""
 
     for r in regions:
         text = (r.translation or "").strip()
-        if not text:
+        if not text or r.skip:
             continue
         family = r.font_family or family_default
         others = [o.bbox for o in regions if o.id != r.id]

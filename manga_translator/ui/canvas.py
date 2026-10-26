@@ -53,7 +53,13 @@ class RegionItem(QGraphicsRectItem):
         self._press_state = None
         self.set_style(False)
 
-    def set_style(self, locked: bool):
+    def set_style(self, locked: bool, skip: bool = False):
+        if skip and self.kind == "region":  # "not text": grey, dashed
+            pen = QPen(QColor("#9e9e9e"), 2, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            self.setPen(pen)
+            self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            return
         if self.kind == "text":
             pen = QPen(QColor("#e65100"), 2, Qt.PenStyle.DashLine)
             pen.setCosmetic(True)
@@ -183,7 +189,7 @@ class Canvas(QGraphicsView):
                 item = RegionItem(self, r.id, text_rects[r.id], kind="text")
             else:
                 item = RegionItem(self, r.id, r.bbox)
-            item.set_style(r.locked)
+            item.set_style(r.locked, r.skip)
             item.setVisible(self.show_boxes)
             self.scene().addItem(item)
             self.items_by_id[r.id] = item
