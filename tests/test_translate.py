@@ -101,3 +101,9 @@ def test_target_language_named_in_request():
 
 def test_parse_free_json_mapping():
     assert parse_response('{"1": "สวัสดี", "2": "ลาก่อน\\nนะ"}') == {1: "สวัสดี", 2: "ลาก่อน นะ"}
+
+
+def test_empty_answer_is_asked_again():
+    s = FakeSession([FakeResp(200, {"message": {"content": ""}}), _reply([{"id": 1, "text": "สวัสดี"}])])
+    out = OllamaTranslator(TranslatorConfig(), s).translate([(1, "HELLO")], "en", "th")
+    assert out == {1: "สวัสดี"} and s.bodies[1]["format"] == "json"

@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QSize, Qt, QTimer, Slot
+from PySide6.QtCore import QLocale, QSize, Qt, QTimer, Slot
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -50,6 +50,9 @@ UNDO_LIMIT = 40
 
 class MainWindow(QMainWindow):
     def __init__(self):
+        # Windows set to Thai with native digits made spin boxes and progress show ๑๒๓;
+        # an explicit Thai locale keeps Thai formatting but uses 0-9
+        QLocale.setDefault(QLocale(QLocale.Language.Thai, QLocale.Country.Thailand))
         super().__init__()
         self.setWindowTitle("Manga Translator")
         self.resize(1500, 950)

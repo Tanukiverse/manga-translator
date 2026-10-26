@@ -159,7 +159,13 @@ class OllamaTranslator:
             return {}
         messages = build_messages(lines, src, tgt, self.cfg)
         content = self._ask(messages)
-        result = parse_response(content)
+        try:
+            result = parse_response(content)
+        except TranslationError:
+            # an empty or broken answer happens now and then (1 page in 38 with Gemma): ask once
+            # more in plain JSON mode instead of failing the whole page
+            content = self._ask(messages, fmt="json")
+            result = parse_response(content)
         wrong = [i for i, t in result.items() if not in_target_script(t, tgt)]
         if wrong:
             # some models (e.g. a 9B uncensored Qwen) answer in the source language: say so and ask again
