@@ -146,6 +146,7 @@ class Canvas(QGraphicsView):
         self._drag_start: QPointF | None = None
         self._rubber: QGraphicsRectItem | None = None
         self._last_paint: QPointF | None = None
+        self._pan_last: QPointF | None = None  # middle-button pan in progress
 
     # ---- content -----------------------------------------------------
     def set_image(self, img: np.ndarray | None, fit: bool = False):
@@ -227,8 +228,11 @@ class Canvas(QGraphicsView):
     # ---- mouse -------------------------------------------------------
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.MiddleButton:
-            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-            return super().mousePressEvent(e)
+            # pan by hand: Qt's ScrollHandDrag only follows the left button
+            self._pan_last = e.position()
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            e.accept()
+            return
         p = self.mapToScene(e.position().toPoint())
         if self.mode == MODE_ADD and e.button() == Qt.MouseButton.LeftButton:
             self._drag_start = p
@@ -242,6 +246,13 @@ class Canvas(QGraphicsView):
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        if self._pan_last is not None:
+            delta = e.position() - self._pan_last
+            self._pan_last = e.position()
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(round(delta.x())))
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(round(delta.y())))
+            e.accept()
+            return
         p = self.mapToScene(e.position().toPoint())
         if self._rubber is not None and self._drag_start is not None:
             self._rubber.setRect(QRectF(self._drag_start, p).normalized())
@@ -254,8 +265,9 @@ class Canvas(QGraphicsView):
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.MiddleButton:
-            super().mouseReleaseEvent(e)
-            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self._pan_last = None
+            self.set_mode(self.mode)  # restore the tool's cursor
+            e.accept()
             return
         if self._rubber is not None:
             r = self._rubber.rect()
