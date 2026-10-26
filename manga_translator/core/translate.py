@@ -129,10 +129,11 @@ class OllamaTranslator:
             "model": self.cfg.model,
             "messages": messages,
             "stream": False,
-            "format": fmt,
             "keep_alive": self.cfg.keep_alive,
             "options": {"temperature": self.cfg.temperature},
         }
+        if fmt is not None:
+            body["format"] = fmt
         if think is not None:
             body["think"] = think
         try:
@@ -165,10 +166,21 @@ class OllamaTranslator:
         try:
             result = parse_response(content)
         except TranslationError:
-            # an empty or broken answer happens now and then (1 page in 38 with Gemma): ask once
-            # more in plain JSON mode instead of failing the whole page
-            content = self._ask(messages, fmt="json")
-            result = parse_response(content)
+            # With any forced format (schema or JSON mode) Gemma sometimes thinks despite
+            # think=false until it hits the length limit and returns nothing (2 pages of 38,
+            # every time). Without a forced format the same request answers at once, so ask
+            # again free-form and pull the JSON out of the reply.
+            free = self._ask(messages, fmt=None)
+            try:
+                result = parse_response(free)
+            except TranslationError:
+                # free-form replies come back as plain translations, one line per bubble
+                answers = [a.strip().strip('"“”').strip() for a in free.strip().splitlines() if a.strip()]
+                if len(lines) == 1 and answers:
+                    answers = [" ".join(answers)]
+                if len(answers) != len(lines):
+                    raise
+                result = {i: pick_one(" ".join(a.split())) for (i, _), a in zip(lines, answers)}
         wrong = [i for i, t in result.items() if not in_target_script(t, tgt)]
         if wrong:
             # some models (e.g. a 9B uncensored Qwen) answer in the source language: say so and ask again
@@ -209,10 +221,14 @@ def parse_response(content: str) -> dict[int, str]:
     content = content.strip()
     if content.startswith("```"):
         content = content.strip("`").removeprefix("json").strip()
+    if not content.startswith("{") and "{" in content and "}" in content:
+        content = content[content.index("{"):content.rindex("}") + 1]  # free-form reply with JSON inside
     try:
         data = json.loads(content)
     except json.JSONDecodeError as e:
         raise TranslationError(f"model returned invalid JSON: {content[:200]}") from e
+    if not isinstance(data, dict):  # e.g. a bare quoted string
+        raise TranslationError(f"model returned no JSON object: {content[:200]}")
     out: dict[int, str] = {}
     if isinstance(data, dict) and "translations" not in data:
         # free JSON mode may answer {"1": "...", "2": "..."} instead of the schema

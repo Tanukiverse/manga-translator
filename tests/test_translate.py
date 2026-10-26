@@ -106,4 +106,23 @@ def test_parse_free_json_mapping():
 def test_empty_answer_is_asked_again():
     s = FakeSession([FakeResp(200, {"message": {"content": ""}}), _reply([{"id": 1, "text": "สวัสดี"}])])
     out = OllamaTranslator(TranslatorConfig(), s).translate([(1, "HELLO")], "en", "th")
-    assert out == {1: "สวัสดี"} and s.bodies[1]["format"] == "json"
+    assert out == {1: "สวัสดี"} and "format" not in s.bodies[1]  # asked again without a forced format
+
+
+def test_json_inside_free_text_reply():
+    assert parse_response('Here you go:\n{"translations":[{"id":2,"text":"ได้เลย"}]}\nDone.') == {2: "ได้เลย"}
+
+
+def test_single_bubble_plain_text_reply():
+    # schema/JSON answers empty, free-form answer is just the translation
+    s = FakeSession([FakeResp(200, {"message": {"content": ""}}),
+                     FakeResp(200, {"message": {"content": "  \"ไปกันเถอะค่ะ/ครับ\"\n"}})])
+    out = OllamaTranslator(TranslatorConfig(), s).translate([(5, "LET'S GO.")], "en", "th")
+    assert out == {5: "ไปกันเถอะค่ะ"}
+
+
+def test_free_form_reply_one_line_per_bubble():
+    s = FakeSession([FakeResp(200, {"message": {"content": ""}}),
+                     FakeResp(200, {"message": {"content": "สวัสดี\nลาก่อนนะ\n"}})])
+    out = OllamaTranslator(TranslatorConfig(), s).translate([(1, "HI"), (2, "BYE")], "en", "th")
+    assert out == {1: "สวัสดี", 2: "ลาก่อนนะ"}
