@@ -1,4 +1,4 @@
-"""Settings: Ollama model, default font and colours, glossary, story notes."""
+"""Settings: Ollama model, default font and colours, glossary, story notes, and saving presets."""
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
@@ -11,11 +11,16 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QFileDialog,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
+    QTabWidget,
     QVBoxLayout,
+    QWidget,
 )
 
+from ..core.export import CHAPTER_TOKEN, FORMATS, ExportError, make_prefix, output_name
 from ..core.settings import Settings
 from ..core.translate import OllamaTranslator, TranslatorConfig
 from .region_panel import ColorButton
@@ -38,7 +43,12 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(520)
         self.s = settings
         lay = QVBoxLayout(self)
-        form = QFormLayout()
+        tabs = QTabWidget()
+        lay.addWidget(tabs)
+        general = QWidget()
+        form = QFormLayout(general)
+        tabs.addTab(general, "ทั่วไป")
+        tabs.addTab(self._build_save_tab(settings), "การเซฟ")
 
         self.url = QLineEdit(settings.ollama_url)
         form.addRow("Ollama URL", self.url)
@@ -92,11 +102,89 @@ class SettingsDialog(QDialog):
         self.notes.setFixedHeight(70)
         form.addRow("บริบทเรื่อง", self.notes)
 
-        lay.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
+
+    def _build_save_tab(self, s: Settings) -> QWidget:
+        page = QWidget()
+        form = QFormLayout(page)
+        self.autosave = QCheckBox("เซฟอัตโนมัติทุกครั้งที่ภาพผลลัพธ์เปลี่ยน")
+        self.autosave.setChecked(s.autosave)
+        self.autosave.setToolTip("หลังขั้น 'ใส่คำแปล' และหลังแก้คำแปลหรือย้ายข้อความเอง (รอ 1.5 วินาทีหลังแก้ครั้งสุดท้าย)")
+        form.addRow("", self.autosave)
+        self.save_dir = QLineEdit(s.save_dir)
+        self.save_dir.setPlaceholderText("เช่น D:\\มังงะแปล")
+        browse = QPushButton("เลือก…")
+        browse.clicked.connect(self._pick_save_dir)
+        row = QHBoxLayout()
+        row.addWidget(self.save_dir, 1)
+        row.addWidget(browse)
+        form.addRow("โฟลเดอร์หลัก", row)
+        form.addRow("", QLabel("<span style='color:#888'>แต่ละตอนจะอยู่ในโฟลเดอร์ย่อยชื่อเดียวกับโฟลเดอร์ต้นฉบับ</span>"))
+        self.save_prefix = QLineEdit(s.save_prefix)
+        self.save_prefix.setToolTip(f"{CHAPTER_TOKEN} = ชื่อโฟลเดอร์ต้นฉบับ (ชื่อตอน) · เว้นว่างได้")
+        form.addRow("คำนำหน้า", self.save_prefix)
+        self.save_start = QSpinBox()
+        self.save_start.setRange(0, 99999)
+        self.save_start.setValue(s.save_start)
+        self.save_digits = QSpinBox()
+        self.save_digits.setRange(1, 6)
+        self.save_digits.setValue(s.save_digits)
+        nrow = QHBoxLayout()
+        nrow.addWidget(QLabel("เริ่มที่"))
+        nrow.addWidget(self.save_start)
+        nrow.addWidget(QLabel("จำนวนหลัก"))
+        nrow.addWidget(self.save_digits)
+        nrow.addStretch()
+        form.addRow("เลขลำดับ", nrow)
+        self.save_format = QComboBox()
+        for key in FORMATS:
+            self.save_format.addItem(key.upper(), key)
+        self.save_format.setCurrentIndex(max(0, self.save_format.findData(s.save_format)))
+        self.save_quality = QSpinBox()
+        self.save_quality.setRange(50, 100)
+        self.save_quality.setValue(s.save_quality)
+        frow = QHBoxLayout()
+        frow.addWidget(self.save_format)
+        frow.addWidget(QLabel("คุณภาพ"))
+        frow.addWidget(self.save_quality)
+        frow.addStretch()
+        form.addRow("ชนิดไฟล์", frow)
+        self.save_preview = QLabel()
+        self.save_preview.setWordWrap(True)
+        form.addRow("ตัวอย่าง", self.save_preview)
+        for w in (self.save_dir, self.save_prefix):
+            w.textChanged.connect(self._update_save_preview)
+        for w in (self.save_start, self.save_digits, self.save_quality):
+            w.valueChanged.connect(self._update_save_preview)
+        self.save_format.currentIndexChanged.connect(self._update_save_preview)
+        self.autosave.toggled.connect(self._update_save_preview)
+        self._update_save_preview()
+        return page
+
+    def _pick_save_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "เลือกโฟลเดอร์หลักสำหรับเซฟภาพแปล", self.save_dir.text())
+        if d:
+            self.save_dir.setText(d)
+
+    def _update_save_preview(self):
+        fmt = self.save_format.currentData()
+        self.save_quality.setEnabled(fmt != "png")
+        try:
+            first = output_name(make_prefix(self.save_prefix.text(), "ตอน5"), self.save_start.value(),
+                                self.save_digits.value(), fmt)
+            second = output_name(make_prefix(self.save_prefix.text(), "ตอน5"), self.save_start.value() + 1,
+                                 self.save_digits.value(), fmt)
+        except ExportError as e:
+            self.save_preview.setText(str(e))
+            return
+        root = self.save_dir.text().strip() or "<โฟลเดอร์หลัก>"
+        text = f"{root}\\ตอน5\\{first}, {second}, …"
+        if self.autosave.isChecked() and not self.save_dir.text().strip():
+            text += "<br><span style='color:#c62828'>ต้องเลือกโฟลเดอร์หลักก่อน เซฟอัตโนมัติถึงจะทำงาน</span>"
+        self.save_preview.setText(text)
 
     def _load_models(self):
         try:
@@ -121,5 +209,12 @@ class SettingsDialog(QDialog):
         s.use_gpu = self.gpu.isChecked()
         s.glossary = parse_glossary(self.glossary.toPlainText())
         s.story_notes = self.notes.toPlainText().strip()
+        s.autosave = self.autosave.isChecked()
+        s.save_dir = self.save_dir.text().strip()
+        s.save_prefix = self.save_prefix.text()
+        s.save_start = self.save_start.value()
+        s.save_digits = self.save_digits.value()
+        s.save_format = self.save_format.currentData()
+        s.save_quality = self.save_quality.value()
         s.save()
         return s

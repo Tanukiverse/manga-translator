@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -172,8 +171,3 @@ def imwrite(path: Path, img: np.ndarray) -> None:
     tmp = path.with_name(path.name + ".tmp")
     buf.tofile(str(tmp))
     _replace_with_retry(tmp, path)
-
-
-def copy_export(src: Path, dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(src, dest)

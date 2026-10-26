@@ -22,6 +22,19 @@ class Settings:
     use_gpu: bool = True
     glossary: dict[str, str] = field(default_factory=dict)
     story_notes: str = ""
+    # page list
+    page_sort: str = "name"  # name | mtime | size | manual
+    page_sort_desc: bool = False
+    skip_done: bool = True  # batch runs skip pages that finished every step
+    # saving (preset for auto-save and the Export dialog); {ตอน} = chapter (source folder) name
+    save_dir: str = ""
+    autosave: bool = False
+    save_prefix: str = "{ตอน}_"
+    save_start: int = 1
+    save_digits: int = 3
+    save_format: str = "png"  # png | jpg | webp
+    save_quality: int = 92
+    export_dir: str = ""  # last folder used by the Export dialog
 
     @classmethod
     def load(cls) -> "Settings":

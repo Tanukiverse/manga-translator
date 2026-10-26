@@ -6,10 +6,12 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QSize, Qt, Slot
+from PySide6.QtCore import QSize, Qt, QTimer, Slot
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -27,9 +29,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core.export import AutoSaver
+from ..core.pages import SORT_KEYS, SORT_LABELS, load_order, save_order, sort_pages
 from ..core.pipeline import STEP_LABELS, STEPS, Models, run_typeset
 from ..core.typeset import place
-from ..core.project import PageDoc, Region, copy_export
+from ..core.project import PageDoc, Region
 from ..core.settings import Settings
 from ..core.translate import LANG_NAMES
 from .canvas import MODE_ADD, MODE_ERASE, MODE_PAINT, MODE_SELECT, MODE_TEXT, Canvas, to_qimage
@@ -59,12 +63,23 @@ class MainWindow(QMainWindow):
         self.undo_stack: list[tuple] = []
         self.redo_stack: list[tuple] = []
         self.busy = False
+        self.folder: Path | None = None
+        self.work_dir: Path | None = None
+        self.failed: dict[str, str] = {}  # page name -> error from the last run
+        self._run_failed: list[str] = []
+        self._current_path: Path | None = None
+        self.autosaver = AutoSaver(self.settings)
+        self._autosave_timer = QTimer(self, singleShot=True, interval=1500)  # after the last edit
+        self._autosave_timer.timeout.connect(self._autosave_current)
         self.ai = AIWorker(self.models)
         # bound methods, not lambdas: a lambda has no receiver object, so Qt would call it on
         # the AI thread and touch widgets there (crash in Qt6Core.dll)
         self.ai.runner.progress.connect(self._on_progress)
         self.ai.runner.step_done.connect(self._step_done)
         self.ai.runner.finished.connect(self._finished)
+        self.ai.runner.page_started.connect(self._page_started)
+        self.ai.runner.page_failed.connect(self._page_failed)
+        self.ai.runner.page_saved.connect(self._page_saved)
         self._build()
         self._update_actions()
 
@@ -101,14 +116,15 @@ class MainWindow(QMainWindow):
             self.step_actions[step] = act
             tb.addAction(act)
         tb.addSeparator()
-        self.all_act = QAction("▶ ทำทั้งหมด", self, shortcut="F5", triggered=lambda: self.run_steps(STEPS))
-        self.all_pages_act = QAction("▶▶ ทุกหน้า", self, triggered=self.run_all_pages)
+        self.all_act = QAction("▶ ทำหน้าที่เลือก", self, shortcut="F5", triggered=self.run_selected)
+        self.all_act.setToolTip("ทำครบ 5 ขั้นกับหน้าที่เลือกในรายการ (Ctrl/Shift+คลิกเพื่อเลือกหลายหน้า) ตามลำดับ")
+        self.all_pages_act = QAction("▶▶ ทำทุกหน้า", self, triggered=self.run_all_pages)
         self.cancel_act = QAction("■ หยุด", self, triggered=self.cancel)
         tb.addAction(self.all_act)
         tb.addAction(self.all_pages_act)
         tb.addAction(self.cancel_act)
         tb.addSeparator()
-        self.export_act = QAction("💾 Export", self, shortcut=QKeySequence.StandardKey.Save, triggered=self.export)
+        self.export_act = QAction("💾 เซฟหลายหน้า", self, shortcut=QKeySequence.StandardKey.Save, triggered=self.export)
         tb.addAction(self.export_act)
         tb.addAction(QAction("⚙ ตั้งค่า", self, triggered=self.open_settings))
         tb.addAction(QAction("ℹ ข้อมูลและสถานะ", self, shortcut="F1", triggered=self.open_info))
@@ -119,11 +135,42 @@ class MainWindow(QMainWindow):
         for a in (undo, redo, delete):
             self.addAction(a)
 
-        # ---- left: pages
+        # ---- left: sort bar + pages
+        left = QWidget()
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(4, 4, 0, 0)
+        sort_row = QHBoxLayout()
+        sort_row.addWidget(QLabel("เรียง"))
+        self.sort_combo = QComboBox()
+        for key in SORT_KEYS:
+            self.sort_combo.addItem(SORT_LABELS[key], key)
+        self.sort_combo.setCurrentIndex(SORT_KEYS.index(self.settings.page_sort) if self.settings.page_sort in SORT_KEYS else 0)
+        self.sort_combo.currentIndexChanged.connect(self._sort_changed)
+        sort_row.addWidget(self.sort_combo, 1)
+        self.sort_dir = QPushButton()
+        self.sort_dir.setCheckable(True)
+        self.sort_dir.setChecked(self.settings.page_sort_desc)
+        self.sort_dir.setFixedWidth(34)
+        self.sort_dir.setToolTip("สลับทิศการเรียง")
+        self.sort_dir.toggled.connect(self._sort_changed)
+        sort_row.addWidget(self.sort_dir)
+        ll.addLayout(sort_row)
         self.pages = QListWidget()
         self.pages.setIconSize(QSize(72, 100))
         self.pages.setMinimumWidth(170)
+        self.pages.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.pages.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.pages.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.pages.setToolTip("ลากเพื่อเรียงเอง · Ctrl/Shift+คลิกเพื่อเลือกหลายหน้า")
         self.pages.currentRowChanged.connect(self._page_selected)
+        self.pages.model().rowsMoved.connect(self._pages_reordered)
+        ll.addWidget(self.pages, 1)
+        self.skip_done = QCheckBox("ข้ามหน้าที่ทำครบแล้ว")
+        self.skip_done.setToolTip("ตอนทำหลายหน้า ข้ามหน้าที่ทำครบ 5 ขั้นแล้ว")
+        self.skip_done.setChecked(self.settings.skip_done)
+        self.skip_done.toggled.connect(self._skip_done_changed)
+        ll.addWidget(self.skip_done)
+        self._update_sort_dir_label()
 
         # ---- centre: view bar + canvas
         center = QWidget()
@@ -193,7 +240,7 @@ class MainWindow(QMainWindow):
         self.panel.delete_requested.connect(self.delete_region)
 
         split = QSplitter()
-        split.addWidget(self.pages)
+        split.addWidget(left)
         split.addWidget(center)
         split.addWidget(self.panel)
         split.setStretchFactor(1, 1)
@@ -203,6 +250,7 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setFixedWidth(160)
+        self.progress.setFormat("%v/%m หน้า")
         self.progress.setVisible(False)
         self.statusBar().addPermanentWidget(self.progress)
 
@@ -212,18 +260,93 @@ class MainWindow(QMainWindow):
         if not folder:
             return
         folder = Path(folder)
-        self.images = sorted(p for p in folder.iterdir() if p.suffix.lower() in IMAGE_EXT)
-        if not self.images:
+        files = [p for p in folder.iterdir() if p.suffix.lower() in IMAGE_EXT]
+        if not files:
             QMessageBox.information(self, "ไม่พบภาพ", "โฟลเดอร์นี้ไม่มีไฟล์ภาพ (png, jpg, webp)")
             return
+        self.folder = folder
         self.work_dir = Path(self.settings.work_dir) / folder.name
         self.docs.clear()
+        self.failed.clear()
+        self._current_path = None
+        self.doc = None
+        self.images = self._sorted(files)
+        self._populate(keep=None)
+        self.setWindowTitle(f"Manga Translator — {folder}")
+
+    def _sorted(self, files: list[Path]) -> list[Path]:
+        key = self.sort_combo.currentData()
+        manual = load_order(self.work_dir) if key == "manual" and self.work_dir else None
+        return sort_pages(files, key, self.sort_dir.isChecked(), manual)
+
+    def _populate(self, keep: Path | None):
+        """Fill the page list from self.images, keeping `keep` (or the first page) selected."""
+        self.pages.blockSignals(True)
         self.pages.clear()
         for p in self.images:
-            item = QListWidgetItem(QIcon(QPixmap(str(p)).scaled(72, 100, Qt.AspectRatioMode.KeepAspectRatio)), p.name)
+            item = QListWidgetItem(QIcon(QPixmap(str(p)).scaled(72, 100, Qt.AspectRatioMode.KeepAspectRatio)), "")
+            item.setData(Qt.ItemDataRole.UserRole, str(p))
             self.pages.addItem(item)
-        self.setWindowTitle(f"Manga Translator — {folder}")
-        self.pages.setCurrentRow(0)
+        self.pages.blockSignals(False)
+        self._refresh_page_labels()
+        row = self.images.index(keep) if keep in self.images else 0
+        self.pages.setCurrentRow(row)
+        self._page_selected(row)  # no-op when it is already the open page
+
+    def _page_label(self, path: Path) -> str:
+        """Status marks: ✓ every step done · ⚠ failed in the last run · 💾 auto-saved."""
+        doc = self.docs.get(path)
+        if doc is None and self.work_dir and (self.work_dir / path.stem / "page.json").exists():
+            doc = PageDoc.load(self.work_dir / path.stem)
+        marks = ""
+        if path.stem in self.failed:
+            marks += "⚠ "
+        elif doc and all(doc.done.get(s) for s in STEPS):
+            marks += "✓ "
+        if self.work_dir and path.stem in self.autosaver.saved_pages(self.work_dir):
+            marks += "💾 "
+        return f"{marks}{path.name}"
+
+    def _refresh_page_labels(self):
+        for i in range(self.pages.count()):
+            item = self.pages.item(i)
+            path = Path(item.data(Qt.ItemDataRole.UserRole))
+            item.setText(self._page_label(path))
+            err = self.failed.get(path.stem)
+            item.setToolTip(f"พังรอบล่าสุด: {err}" if err else "")
+
+    def _update_sort_dir_label(self):
+        manual = self.sort_combo.currentData() == "manual"
+        self.sort_dir.setEnabled(not manual)
+        self.sort_dir.setText("↑" if self.sort_dir.isChecked() else "↓")
+
+    def _sort_changed(self, *_):
+        self.settings.page_sort = self.sort_combo.currentData()
+        self.settings.page_sort_desc = self.sort_dir.isChecked()
+        self.settings.save()
+        self._update_sort_dir_label()
+        if not self.images:
+            return
+        self.images = self._sorted(self.images)
+        self._populate(self._current_path)
+        self._resave_all()
+
+    def _pages_reordered(self, *_):
+        """The user dragged pages: their order becomes the "manual" order and is remembered."""
+        self.images = [Path(self.pages.item(i).data(Qt.ItemDataRole.UserRole)) for i in range(self.pages.count())]
+        save_order(self.work_dir, self.images)
+        if self.sort_combo.currentData() != "manual":
+            self.sort_combo.blockSignals(True)
+            self.sort_combo.setCurrentIndex(SORT_KEYS.index("manual"))
+            self.sort_combo.blockSignals(False)
+            self.settings.page_sort = "manual"
+            self.settings.save()
+            self._update_sort_dir_label()
+        self._resave_all()
+
+    def _skip_done_changed(self, on: bool):
+        self.settings.skip_done = on
+        self.settings.save()
 
     def _doc_for(self, row: int) -> PageDoc:
         path = self.images[row]
@@ -234,7 +357,17 @@ class MainWindow(QMainWindow):
     def _page_selected(self, row: int):
         if row < 0 or row >= len(self.images):
             return
-        self.doc = self._doc_for(row)
+        if self.images[row] == self._current_path and self.doc is not None:
+            return  # same page after re-sorting: keep zoom, selection and undo history
+        try:
+            doc = self._doc_for(row)
+        except (OSError, ValueError) as e:
+            self.failed[self.images[row].stem] = f"เปิดภาพไม่ได้: {e}"
+            self._refresh_page_labels()
+            self.statusBar().showMessage(f"เปิดภาพ {self.images[row].name} ไม่ได้: {e}", 8000)
+            return
+        self._current_path = self.images[row]
+        self.doc = doc
         self.undo_stack.clear()
         self.redo_stack.clear()
         self._loading_langs = True
@@ -271,10 +404,15 @@ class MainWindow(QMainWindow):
     def show_layer(self, layer: str, fit: bool = False):
         if not self.doc:
             return
-        img = self.doc.load_layer(layer)
-        if img is None:
-            img = self.doc.load_original()
-            layer = "original"
+        try:
+            img = self.doc.load_layer(layer)
+            if img is None:
+                img = self.doc.load_original()
+                layer = "original"
+        except (OSError, ValueError) as e:  # the page's work files are missing or damaged
+            self.canvas.set_image(None)
+            self.statusBar().showMessage(f"เปิดภาพของหน้านี้ไม่ได้: {e}", 8000)
+            return
         self.layer = layer
         for b in self.layer_group.buttons():
             b.setChecked(b.property("layer") == layer)
@@ -288,7 +426,9 @@ class MainWindow(QMainWindow):
         cleaned = self.doc.load_layer("cleaned")
         if cleaned is None:
             return {}
-        return {r.id: list(place(cleaned, r, self.doc.target_lang, self.settings.font_family)[0])
+        boxes = {r.id: r.bbox for r in self.doc.regions}
+        return {r.id: list(place(cleaned, r, self.doc.target_lang, self.settings.font_family,
+                                 [b for i, b in boxes.items() if i != r.id])[0])
                 for r in self.doc.regions if (r.translation or "").strip()}
 
     def _refresh_boxes(self):
@@ -327,13 +467,16 @@ class MainWindow(QMainWindow):
             a.setEnabled(has and not busy)
         self.all_act.setEnabled(has and not busy)
         self.all_pages_act.setEnabled(has and not busy and len(self.images) > 1)
+        self.sort_combo.setEnabled(not busy)
+        self.sort_dir.setEnabled(not busy and self.sort_combo.currentData() != "manual")
+        self.pages.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop if busy
+                                   else QAbstractItemView.DragDropMode.InternalMove)
         self.cancel_act.setEnabled(busy)
         self.export_act.setEnabled(has and not busy)
         self.progress.setVisible(busy)
         # edits while a step runs would be overwritten when the step saves the page
         self.panel.setEnabled(not busy)
         self.canvas.setInteractive(not busy)
-        self.pages.setEnabled(not busy)
         if has:
             done = [f"{'✓' if self.doc.done.get(s) else '·'} {STEP_LABELS[s]}" for s in STEPS]
             self.hint.setText("   ".join(done))
@@ -390,6 +533,7 @@ class MainWindow(QMainWindow):
         if self.doc.cleaned_path.exists() and any(k in fields for k in ("translation", "font_family", "font_size", "color",
                                                                         "outline", "align", "text_rect", "wrap")):
             run_typeset(self.doc, self.models, self.statusBar().showMessage)
+            self._autosave_timer.start()
             if self.layer == "final":
                 self.show_layer("final")
             if self.canvas.mode == MODE_TEXT:
@@ -410,6 +554,7 @@ class MainWindow(QMainWindow):
             self.panel.locked.blockSignals(False)
             self.panel.auto_place.setEnabled(True)
         run_typeset(self.doc, self.models, self.statusBar().showMessage)
+        self._autosave_timer.start()
         # only the image changes: the dragged box is already where the user dropped it
         self.show_layer("final")
 
@@ -468,62 +613,158 @@ class MainWindow(QMainWindow):
         docs = docs or [self.doc]
         for d in docs:
             d.source_lang, d.target_lang = self._src(), self._tgt()
+            self.failed.pop(d.folder.name, None)
+        self._run_failed = []
+        self.ai.runner.save_hook = self._make_save_hook()
         self.busy = True
+        self.progress.setRange(0, len(docs))
+        self.progress.setValue(0)
+        self.progress.setTextVisible(len(docs) > 1)
         self._update_actions()
+        self._refresh_page_labels()
         self.ai.submit(docs, list(steps))
 
+    def _batch_docs(self, rows: list[int]) -> list[PageDoc] | None:
+        docs = []
+        for r in rows:
+            try:
+                docs.append(self._doc_for(r))
+            except (OSError, ValueError) as e:  # unreadable image: report it, keep the others
+                self.failed[self.images[r].stem] = f"เปิดภาพไม่ได้: {e}"
+        self._refresh_page_labels()
+        if len(docs) > 1 and self.skip_done.isChecked():
+            docs = [d for d in docs if not all(d.done.get(s) for s in STEPS)]
+            if not docs:
+                QMessageBox.information(self, "ไม่มีหน้าที่ต้องทำ",
+                                        "ทุกหน้าที่เลือกทำครบแล้ว (ยกเลิกติ๊ก 'ข้ามหน้าที่ทำครบแล้ว' เพื่อทำซ้ำ)")
+                return None
+        return docs
+
+    def run_selected(self):
+        rows = sorted({i.row() for i in self.pages.selectedIndexes()}) or [self.pages.currentRow()]
+        docs = self._batch_docs([r for r in rows if r >= 0])
+        if docs:
+            self.run_steps(STEPS, docs)
+
     def run_all_pages(self):
-        docs = [self._doc_for(i) for i in range(len(self.images))]
-        self.run_steps(STEPS, docs)
+        docs = self._batch_docs(list(range(len(self.images))))
+        if docs:
+            self.run_steps(STEPS, docs)
 
     def cancel(self):
         if self.busy:
             self.ai.cancel()
             self.statusBar().showMessage("กำลังหยุดหลังขั้นตอนปัจจุบัน …")
 
+    # ---- auto-save
+    def _make_save_hook(self):
+        """A plain function for the AI thread: saves a finished page under its number in the list."""
+        if not self.autosaver.enabled or not self.folder:
+            return None
+        chapter, work_dir = self.folder.name, self.work_dir
+        index = {p.stem: i for i, p in enumerate(self.images)}
+        saver = self.autosaver
+
+        def hook(doc):
+            i = index.get(doc.folder.name)
+            return None if i is None else saver.save(work_dir, chapter, doc.folder.name, i, doc.final_path)
+        return hook
+
+    def _autosave_current(self):
+        if not self.doc or not self.autosaver.enabled or self._current_path not in self.images:
+            return
+        name = self.autosaver.save(self.work_dir, self.folder.name, self.doc.folder.name,
+                                   self.images.index(self._current_path), self.doc.final_path)
+        if name:
+            self.statusBar().showMessage(f"💾 เซฟอัตโนมัติ {name}", 4000)
+        elif self.autosaver.status.last_error:
+            self.statusBar().showMessage(self.autosaver.status.last_error, 8000)
+        self._refresh_page_labels()
+
+    def _resave_all(self):
+        """Page numbers follow the list order: after re-ordering, re-save every finished page."""
+        if not self.autosaver.enabled or not self.folder or not self.images:
+            return
+        jobs = [(p.stem, i, self.work_dir / p.stem / "final.png") for i, p in enumerate(self.images)
+                if (self.work_dir / p.stem / "final.png").exists()]
+        if not jobs:
+            return
+        chapter, work_dir, saver, runner = self.folder.name, self.work_dir, self.autosaver, self.ai.runner
+
+        def resave():
+            # swapped numbers are safe: AutoSaver may overwrite a file only if it wrote it,
+            # and it hands the name over to the page now using it
+            for stem, i, final in jobs:
+                name = saver.save(work_dir, chapter, stem, i, final)
+                if name:
+                    runner.page_saved.emit(stem, name)
+        self.statusBar().showMessage(f"💾 เซฟใหม่ตามลำดับใหม่ {len(jobs)} หน้า …", 4000)
+        self.ai.run_call(resave)
+
     @Slot(str)
     def _on_progress(self, msg: str):
         self.statusBar().showMessage(msg)
 
-    @Slot(str)
-    def _step_done(self, step: str):
-        layer = {"clean": "cleaned", "typeset": "final"}.get(step, self.layer)
-        self.doc = PageDoc.load(self.doc.folder) if self.doc else None
-        if self.doc:
-            self.docs[self.images[self.pages.currentRow()]] = self.doc
-        self.reload(layer=layer)
+    @Slot(int, int, str)
+    def _page_started(self, n: int, total: int, name: str):
+        self.progress.setValue(n - 1)
+
+    @Slot(str, str)
+    def _page_failed(self, name: str, error: str):
+        self.failed[name] = error
+        self._run_failed.append(name)
+        self._refresh_page_labels()
+
+    @Slot(str, str)
+    def _page_saved(self, name: str, file: str):
+        self._refresh_page_labels()
+
+    @Slot(str, str)
+    def _step_done(self, step: str, folder: str):
+        if self.doc and str(self.doc.folder) == folder:
+            layer = {"clean": "cleaned", "typeset": "final"}.get(step, self.layer)
+            self.doc = PageDoc.load(self.doc.folder)
+            self.docs[self._current_path] = self.doc
+            self.reload(layer=layer)
+        if step == "typeset":
+            self._refresh_page_labels()
 
     @Slot(bool, str)
-    def _finished(self, ok: bool, error: str):
+    def _finished(self, ok: bool, message: str):
         self.busy = False
-        # worker threads saved their own PageDoc copies; reload every open page from disk
+        self.progress.setValue(self.progress.maximum())
+        # the AI thread saved its own PageDoc copies; reload every open page from disk
         for p, d in list(self.docs.items()):
             self.docs[p] = PageDoc.load(d.folder)
-        if self.pages.currentRow() >= 0:
-            self.doc = self.docs[self.images[self.pages.currentRow()]]
+        if self._current_path in self.docs:
+            self.doc = self.docs[self._current_path]
             self.reload()
         self._update_actions()
-        if ok:
-            self.statusBar().showMessage("เสร็จแล้ว", 5000)
-        elif error:
-            self.statusBar().showMessage(error, 10000)
-            if error != "ยกเลิกแล้ว":
-                QMessageBox.warning(self, "เกิดข้อผิดพลาด", error)
+        self._refresh_page_labels()
+        if message == "ยกเลิกแล้ว":
+            self.statusBar().showMessage("หยุดแล้ว", 6000)
+            return
+        if not self._run_failed:
+            self.statusBar().showMessage(message or "เสร็จแล้ว", 6000)
+            return
+        self.statusBar().showMessage(message, 10000)
+        lines = "\n".join(f"• {n}: {self.failed.get(n, '')[:200]}" for n in self._run_failed)
+        box = QMessageBox(QMessageBox.Icon.Warning, "บางหน้าทำไม่สำเร็จ", f"{message}\n\n{lines}", parent=self)
+        retry = box.addButton("ลองใหม่เฉพาะหน้าที่พัง", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("ปิด", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is retry:
+            rows = [i for i, p in enumerate(self.images) if p.stem in self._run_failed]
+            self.run_steps(STEPS, [self._doc_for(r) for r in rows])
 
     # =========================================================== export
     def export(self):
-        if not self.doc:
+        if not self.doc or not self.folder:
             return
-        ready = [(p, d) for p, d in self.docs.items() if d.final_path.exists()]
-        if not ready:
-            QMessageBox.information(self, "ยังไม่มีผลลัพธ์", "ยังไม่มีหน้าที่ใส่คำแปลแล้ว")
-            return
-        folder = QFileDialog.getExistingDirectory(self, "เลือกโฟลเดอร์ที่จะบันทึกภาพแปล")
-        if not folder:
-            return
-        for p, d in ready:
-            copy_export(d.final_path, Path(folder) / f"{p.stem}.png")
-        self.statusBar().showMessage(f"บันทึก {len(ready)} หน้าไปที่ {folder}", 8000)
+        from .export_dialog import ExportDialog
+
+        ExportDialog(self).exec()
+        self._refresh_page_labels()
 
     def open_info(self):
         from .info_dialog import InfoDialog

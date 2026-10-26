@@ -219,6 +219,32 @@ def _bubble_mask(img_bgr: np.ndarray, bbox, tol: int = 24) -> np.ndarray | None:
     return region
 
 
+def _claim(region: np.ndarray, bbox, others) -> np.ndarray:
+    """Split a bubble shared with other text boxes (two lobes joined into one shape): keep only
+    the pixels nearer to this box than to any other box whose centre lies in the same bubble."""
+    ys, xs = np.nonzero(region)
+    y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+    rivals = []
+    for ox, oy, ow, oh in others:
+        cx, cy = ox + ow // 2, oy + oh // 2
+        if y0 <= cy < y1 and x0 <= cx < x1 and region[cy, cx]:
+            rivals.append((ox, oy, ow, oh))
+    if not rivals:
+        return region
+    gy, gx = np.mgrid[y0:y1, x0:x1]
+
+    def dist(b):
+        bx, by, bw, bh = b
+        dx = np.maximum(np.maximum(bx - gx, gx - (bx + bw)), 0)
+        dy = np.maximum(np.maximum(by - gy, gy - (by + bh)), 0)
+        return np.hypot(dx, dy)
+
+    nearest_other = np.min([dist(b) for b in rivals], axis=0)
+    out = np.zeros_like(region)
+    out[y0:y1, x0:x1] = np.where((region[y0:y1, x0:x1] > 0) & (dist(bbox) <= nearest_other), 255, 0)
+    return out
+
+
 def _inscribed_rect(region: np.ndarray, cx: int, cy: int) -> tuple[int, int, int, int]:
     """Grow a rectangle from (cx, cy) one side at a time while it stays inside the region.
     Unlike the bounding box, this ignores spikes and tails of jagged bubbles."""
@@ -256,16 +282,19 @@ def _shrink(rect, ratio: float, min_px: int = 2) -> tuple[int, int, int, int]:
     return (int(x + dx), int(y + dy), int(w - 2 * dx), int(h - 2 * dy))
 
 
-def bubble_rects(img_bgr: np.ndarray, bbox) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
+def bubble_rects(img_bgr: np.ndarray, bbox, others=()) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
     """(inner, loose) text rectangles for a region.
 
     inner: largest rectangle grown inside the bubble from the box centre, with a margin.
     loose: the bubble's bounding box with a small margin; used when text will not fit inside.
-    Both fall back to the box itself when there is no closed bubble.
+    Both fall back to the box itself when there is no closed bubble. `others` are the page's
+    other text boxes: a bubble shared with them is split so translations do not overlap.
     """
     region = _bubble_mask(img_bgr, bbox)
     if region is None:
         return tuple(bbox), tuple(bbox)
+    if others:
+        region = _claim(region, bbox, others)
     x, y, w, h = bbox
     ys, xs = np.nonzero(region)
     loose = _shrink((xs.min(), ys.min(), xs.max() + 1 - xs.min(), ys.max() + 1 - ys.min()), 0.04)
@@ -310,7 +339,7 @@ def choose_layout(text: str, lang: str, family: str, inner, loose, fixed_size: i
     return loose, lay, True
 
 
-def place(cleaned_bgr: np.ndarray, r, lang: str, default_family: str = ""):
+def place(cleaned_bgr: np.ndarray, r, lang: str, default_family: str = "", others=()):
     """(rect, layout, spilled) for one region: the user's own text box when they moved it,
     otherwise the automatic fit inside the bubble."""
     family = r.font_family or default_family or DEFAULT_FONTS.get(lang, "Arial")
@@ -320,7 +349,7 @@ def place(cleaned_bgr: np.ndarray, r, lang: str, default_family: str = ""):
         x, y, w, h = r.text_rect
         lay = fit_text(text, lang, family, w, h, r.font_size, max_size_for(cleaned_bgr.shape), manual=manual)
         return (x, y, w, h), lay, False
-    inner, loose = bubble_rects(cleaned_bgr, r.bbox)
+    inner, loose = bubble_rects(cleaned_bgr, r.bbox, others)
     return choose_layout(text, lang, family, inner, loose, r.font_size, cleaned_bgr.shape, manual)
 
 
@@ -344,7 +373,8 @@ def render(cleaned_bgr: np.ndarray, regions, lang: str, default_family: str = ""
         if not text:
             continue
         family = r.font_family or family_default
-        (rx, ry, rw, rh), lay, spilled = place(cleaned_bgr, r, lang, default_family)
+        others = [o.bbox for o in regions if o.id != r.id]
+        (rx, ry, rw, rh), lay, spilled = place(cleaned_bgr, r, lang, default_family, others)
         if spilled or not lay.fits:
             overflow.append(r.id)
         font = QFont(family)

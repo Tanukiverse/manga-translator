@@ -15,6 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from manga_translator import crashlog  # noqa: E402
 crashlog.install()
+from _isolate import isolate_settings  # noqa: E402
+
+isolate_settings()  # the window saves settings (sort order, languages): never touch the user's file
 from manga_translator.core.pipeline import STEPS  # noqa: E402
 from manga_translator.ui.main_window import MainWindow  # noqa: E402
 

@@ -129,3 +129,19 @@ def test_model_line_breaks_are_not_forced():
     from manga_translator.core.translate import parse_response
 
     assert parse_response('{"translations":[{"id":1,"text":"บรรทัดหนึ่ง\\nบรรทัดสอง"}]}') == {1: "บรรทัดหนึ่ง บรรทัดสอง"}
+
+
+def test_joined_bubble_is_shared_between_its_boxes():
+    import cv2
+
+    from manga_translator.core.typeset import bubble_rects
+
+    img = np.full((1000, 1000, 3), 120, np.uint8)
+    for cx in (400, 560):  # two lobes joined into one white shape, like a double speech bubble
+        cv2.ellipse(img, (cx, 500), (110, 150), 0, 0, 360, (255, 255, 255), -1)
+    left, right = [350, 450, 60, 80], [520, 450, 60, 80]
+    li, ll = bubble_rects(img, left, [right])
+    ri, rl = bubble_rects(img, right, [left])
+    assert li[0] + li[2] <= ri[0] and ll[0] + ll[2] <= rl[0] + 2  # no overlap between the halves
+    alone, _ = bubble_rects(img, left)
+    assert alone[2] > li[2]  # without the other box it would have taken the whole shape

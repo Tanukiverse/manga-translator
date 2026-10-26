@@ -56,7 +56,7 @@ class TextDetector:
         if blks is None or seg is None:
             raise RuntimeError(f"unexpected detector outputs: {[o.shape for o in outputs]}")
 
-        dets = self._boxes(blks[0], scale, w, h)
+        dets = resolve_overlaps(self._boxes(blks[0], scale, w, h))
         prob = seg[0, 0, :nh, :nw]
         prob = cv2.resize(prob, (w, h), interpolation=cv2.INTER_LINEAR)
         mask = build_mask(prob, dets)
@@ -80,6 +80,42 @@ class TextDetector:
             if x1 - x0 >= 4 and y1 - y0 >= 4:
                 dets.append(Detection((x0, y0, x1 - x0, y1 - y0), float(conf[i])))
         return dets
+
+
+def resolve_overlaps(dets: list[Detection], inside: float = 0.6) -> list[Detection]:
+    """A box that spans two neighbouring bubbles often comes with a second box for one of them,
+    and both translations would then be drawn on top of each other. When a smaller box lies
+    mostly inside a bigger one, cut the bigger box back to the side the smaller one is not on;
+    if the smaller one sits in the middle, it is a duplicate and is dropped."""
+    out = sorted(dets, key=lambda d: d.bbox[2] * d.bbox[3], reverse=True)  # biggest first
+    i = 0
+    while i < len(out):
+        j = i + 1
+        while j < len(out):
+            bx, by, bw, bh = out[i].bbox
+            sx, sy, sw, sh = out[j].bbox
+            ix = max(0, min(bx + bw, sx + sw) - max(bx, sx))
+            iy = max(0, min(by + bh, sy + sh) - max(by, sy))
+            if ix * iy < inside * sw * sh:
+                j += 1
+                continue
+            # free strip beside the small box on each side, as a share of the big box's size
+            sides = {
+                "left": (sx - bx) / bw, "right": (bx + bw - sx - sw) / bw,
+                "top": (sy - by) / bh, "bottom": (by + bh - sy - sh) / bh,
+            }
+            side = max(sides, key=sides.get)
+            if sides[side] < 0.3:
+                del out[j]  # it sits in the middle: a duplicate of the big box
+                continue
+            trimmed = {
+                "left": (bx, by, sx - bx, bh), "right": (sx + sw, by, bx + bw - sx - sw, bh),
+                "top": (bx, by, bw, sy - by), "bottom": (bx, sy + sh, bw, by + bh - sy - sh),
+            }[side]
+            out[i] = Detection(trimmed, out[i].score)
+            j += 1
+        i += 1
+    return [d for d in out if d.bbox[2] >= 4 and d.bbox[3] >= 4]
 
 
 def build_mask(prob: np.ndarray, dets: list[Detection], pad: int = 4, dilate: int = 3) -> np.ndarray:

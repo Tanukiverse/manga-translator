@@ -134,6 +134,27 @@ class InfoDialog(QDialog):
         if o and o.ok:
             running = ", ".join(f"{m['name']} ({m['vram_gb']:.1f} GB)" for m in o.running) or "ไม่มี"
             parts.append(f"<tr><td>โมเดลแปลที่อยู่ใน VRAM</td><td>{e(running)}</td></tr>")
+        st, sv = w.settings, w.autosaver.status
+        if not st.autosave:
+            save = dot(IDLE, "ปิดอยู่ (เปิดได้ใน ⚙ ตั้งค่า → การเซฟ)")
+        elif not st.save_dir:
+            save = dot(BAD, "เปิดอยู่แต่ยังไม่ได้เลือกโฟลเดอร์หลัก")
+        else:
+            folder = sv.folder or (str(w.autosaver.chapter_dir(w.folder.name)) if w.folder else st.save_dir)
+            save = dot(OK, f"เปิดอยู่ · {folder}")
+            if w.work_dir:
+                save += f"<br>เซฟแล้ว {len(w.autosaver.saved_pages(w.work_dir))} หน้า"
+            if sv.last_file:
+                save += f" · ล่าสุด {e(sv.last_file)}"
+            if sv.last_error:
+                save += "<br>" + dot(BAD, sv.last_error)
+        parts.append(f"<tr><td valign=top>เซฟอัตโนมัติ</td><td>{save}</td></tr>")
+        if w.images:
+            failed = len(w.failed)
+            line = f"{len(w.images)} หน้า · เรียงตาม{e(w.sort_combo.currentText())}"
+            if failed:
+                line += " · " + dot(BAD, f"พังรอบล่าสุด {failed} หน้า")
+            parts.append(f"<tr><td>ตอนนี้</td><td>{e(w.folder.name)} · {line}</td></tr>")
         if w.doc:
             done = " · ".join(("✓ " if w.doc.done.get(k) else "· ") + v for k, v in _step_labels())
             parts.append(f"<tr><td>หน้าปัจจุบัน</td><td>{e(w.doc.folder.name)} · {len(w.doc.regions)} กล่อง<br>{e(done)}</td></tr>")

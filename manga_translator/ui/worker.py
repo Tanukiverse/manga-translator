@@ -15,37 +15,65 @@ from ..core.pipeline import RUNNERS, STEP_LABELS, Models
 
 class StepRunner(QObject):
     progress = Signal(str)
-    step_done = Signal(str)
-    finished = Signal(bool, str)  # ok, error message
+    step_done = Signal(str, str)  # step, page folder
+    page_started = Signal(int, int, str)  # index (1-based), total, page name
+    page_failed = Signal(str, str)  # page name, error
+    page_saved = Signal(str, str)  # page name, file name written by auto-save
+    finished = Signal(bool, str)  # ok (nothing failed or cancelled), message
 
     def __init__(self, models: Models):
         super().__init__()
         self.models = models
         self._cancel = False
+        # set from the UI thread before submit: called after "typeset" with the page's doc,
+        # returns the auto-saved file name or None. Must not touch widgets.
+        self.save_hook = None
 
     def cancel(self):
         self._cancel = True  # read by the AI thread between steps
 
     @Slot(list, list)
     def run(self, docs: list, steps: list):
+        """Run steps on each page in order. A failing page is reported and skipped; the rest go on."""
         self._cancel = False
-        try:
-            for doc in docs:
+        failed = []
+        for n, doc in enumerate(docs, 1):
+            name = doc.folder.name
+            self.page_started.emit(n, len(docs), name)
+            try:
                 for step in steps:
                     if self._cancel:
                         self.finished.emit(False, "ยกเลิกแล้ว")
                         return
-                    self.progress.emit(f"{doc.folder.name}: {STEP_LABELS[step]} …")
-                    RUNNERS[step](doc, self.models, lambda m, d=doc: self.progress.emit(f"{d.folder.name}: {m}"))
-                    self.step_done.emit(step)
-            self.finished.emit(True, "")
-        except Exception as e:  # surface every failure in the UI instead of crashing
+                    prefix = f"หน้า {n}/{len(docs)} · {name}" if len(docs) > 1 else name
+                    self.progress.emit(f"{prefix}: {STEP_LABELS[step]} …")
+                    RUNNERS[step](doc, self.models, lambda m, p=prefix: self.progress.emit(f"{p}: {m}"))
+                    if step == "typeset" and self.save_hook is not None:
+                        saved = self.save_hook(doc)
+                        if saved:
+                            self.page_saved.emit(name, saved)
+                    self.step_done.emit(step, str(doc.folder))
+            except Exception as e:  # report and move on to the next page
+                traceback.print_exc()
+                failed.append(name)
+                self.page_failed.emit(name, str(e) or type(e).__name__)
+        if failed:
+            self.finished.emit(False, f"เสร็จ {len(docs) - len(failed)}/{len(docs)} หน้า · พัง {len(failed)} หน้า")
+        else:
+            self.finished.emit(True, f"เสร็จ {len(docs)} หน้า" if len(docs) > 1 else "")
+
+    @Slot(object)
+    def call(self, fn):
+        """Run a plain function on the AI thread (e.g. re-saving pages after a reorder)."""
+        try:
+            fn()
+        except Exception:
             traceback.print_exc()
-            self.finished.emit(False, str(e))
 
 
 class AIWorker(QObject):
     _submit = Signal(list, list)
+    _call = Signal(object)
 
     def __init__(self, models: Models):
         super().__init__()
@@ -54,10 +82,14 @@ class AIWorker(QObject):
         self.runner = StepRunner(models)
         self.runner.moveToThread(self.thread)
         self._submit.connect(self.runner.run)  # queued: runs on the AI thread
+        self._call.connect(self.runner.call)
         self.thread.start()
 
     def submit(self, docs: list, steps: list):
         self._submit.emit(docs, steps)
+
+    def run_call(self, fn):
+        self._call.emit(fn)
 
     def cancel(self):
         self.runner.cancel()
