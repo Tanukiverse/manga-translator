@@ -13,6 +13,8 @@ from .project import PageDoc, Region
 from .settings import Settings
 from .translate import OllamaTranslator, TranslatorConfig
 
+LIGHT_TEXT_GROW = 6  # extra mask growth (px) for light lettering; 0 left a white smear, 12 a small dent
+
 STEPS = ["detect", "ocr", "translate", "clean", "typeset"]
 STEP_LABELS = {
     "detect": "ตรวจจับข้อความ",
@@ -146,10 +148,10 @@ def run_detect(doc: PageDoc, models: Models, progress: Progress | None = None) -
 
     img = doc.load_original()
     dets, mask = models.detector(img)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     if doc.source_lang != "ja":  # horizontal text: split boxes holding two blocks side by side
         from .detect import Detection, split_side_by_side
 
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         dets = [Detection(b, d.score) for d in dets for b in split_side_by_side(d.bbox, mask, gray)]
     locked = [r for r in doc.regions if r.locked]
     # keep locked regions; drop new detections that overlap them
@@ -157,15 +159,24 @@ def run_detect(doc: PageDoc, models: Models, progress: Progress | None = None) -
     order = sort_reading_order([d.bbox for d in fresh], right_to_left=doc.source_lang == "ja")
     regions = list(locked)
     next_id = max((r.id for r in locked), default=0) + 1
+    from .detect import grow_mask_in, is_light_text
+
+    light = 0
     for i in order:
         x, y, w, h = fresh[i].bbox
-        regions.append(Region(
+        region = Region(
             id=next_id,
             bbox=[x, y, w, h],
             vertical=doc.source_lang == "ja" and h > w * 1.2,
             color=models.settings.text_color or "#000000",
             outline=models.settings.outline_color,
-        ))
+        )
+        if is_light_text(gray, mask, region.bbox):
+            # white lettering on dark art: remove its halo too, and draw the translation white
+            grow_mask_in(mask, region.bbox, LIGHT_TEXT_GROW)
+            region.color, region.outline = "#ffffff", "#000000"
+            light += 1
+        regions.append(region)
         next_id += 1
     doc.regions = regions
     old_mask = doc.load_layer("mask")
@@ -178,7 +189,7 @@ def run_detect(doc: PageDoc, models: Models, progress: Progress | None = None) -
     _invalidate_after(doc, "detect")
     doc.done["detect"] = True
     doc.save()
-    _log(progress, f"พบข้อความ {len(fresh)} กล่อง")
+    _log(progress, f"พบข้อความ {len(fresh)} กล่อง" + (f" (ตัวหนังสือสว่างบนพื้นมืด {light})" if light else ""))
 
 
 def run_ocr(doc: PageDoc, models: Models, progress: Progress | None = None) -> None:

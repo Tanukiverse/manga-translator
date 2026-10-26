@@ -190,6 +190,30 @@ def split_side_by_side(bbox, mask: np.ndarray, gray: np.ndarray | None = None) -
     return out
 
 
+def is_light_text(gray: np.ndarray, mask: np.ndarray, bbox) -> bool:
+    """White lettering on a dark background (captions over hair, night scenes, black boxes):
+    the text pixels are clearly brighter than the pixels just around them, which are dark."""
+    x, y, w, h = bbox
+    m = mask[y:y + h, x:x + w] > 0
+    if m.sum() < 20:
+        return False
+    g = gray[y:y + h, x:x + w]
+    ring = cv2.dilate(m.astype(np.uint8), np.ones((9, 9), np.uint8)).astype(bool) & ~m
+    if ring.sum() < 20:
+        return False
+    text, around = float(g[m].mean()), float(g[ring].mean())
+    return around < 110 and text > around + 40
+
+
+def grow_mask_in(mask: np.ndarray, bbox, px: int, pad: int = 8) -> None:
+    """Dilate the mask by `px` inside one box (in place). Light lettering has a bright halo past
+    the detected strokes; left in, LaMa smears it into a white blotch over the art."""
+    x, y, w, h = bbox
+    sl = (slice(max(0, y - pad), y + h + pad), slice(max(0, x - pad), x + w + pad))
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * px + 1, 2 * px + 1))
+    mask[sl] = cv2.dilate(mask[sl], k)
+
+
 def build_mask(prob: np.ndarray, dets: list[Detection], pad: int = 4, dilate: int = 3) -> np.ndarray:
     """Text mask from the segmentation map, kept only inside (slightly padded) detected boxes."""
     h, w = prob.shape

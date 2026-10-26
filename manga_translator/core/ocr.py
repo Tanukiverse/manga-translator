@@ -11,6 +11,28 @@ from PIL import Image
 from .paths import MODELS_DIR
 
 
+def readable(img_bgr: np.ndarray, bbox, mask: np.ndarray | None) -> np.ndarray:
+    """The page as an OCR model expects it: dark lettering on light paper. White lettering on a
+    dark background is inverted (it read "WELL THEN." as "WEEN.", a 5-line caption as "AT")."""
+    if mask is None:
+        return img_bgr
+    from .detect import is_light_text
+
+    x, y, w, h = bbox
+    # judge with a margin: the dark surroundings the text is compared with lie partly outside the box
+    m = 12
+    x0, y0 = max(0, x - m), max(0, y - m)
+    gray = cv2.cvtColor(img_bgr[y0:y + h + m, x0:x + w + m], cv2.COLOR_BGR2GRAY)
+    if not is_light_text(gray, mask[y0:y + h + m, x0:x + w + m], (x - x0, y - y0, w, h)):
+        return img_bgr
+    out = img_bgr.copy()
+    H, W = img_bgr.shape[:2]
+    pad = 8  # the crops below take a margin around the box
+    sl = (slice(max(0, y - pad), min(H, y + h + pad)), slice(max(0, x - pad), min(W, x + w + pad)))
+    out[sl] = 255 - out[sl]
+    return out
+
+
 def crop(img_bgr: np.ndarray, bbox, pad: int = 4) -> np.ndarray:
     h, w = img_bgr.shape[:2]
     x, y, bw, bh = bbox
@@ -24,7 +46,7 @@ class JapaneseOcr:
         self.model = MangaOcr(pretrained_model_name_or_path=str(MODELS_DIR / "manga-ocr-base"), force_cpu=force_cpu)
 
     def __call__(self, img_bgr: np.ndarray, bbox, mask: np.ndarray | None = None) -> str:
-        part = crop(img_bgr, bbox)
+        part = crop(readable(img_bgr, bbox, mask), bbox)
         if part.size == 0:
             return ""
         return self.model(Image.fromarray(part[:, :, ::-1])).strip()
@@ -48,7 +70,7 @@ class EnglishOcr:
 
     def __call__(self, img_bgr: np.ndarray, bbox, mask: np.ndarray | None = None) -> str:
         pad = 6
-        part = crop(img_bgr, bbox, pad=pad)
+        part = crop(readable(img_bgr, bbox, mask), bbox, pad=pad)
         if part.size == 0:
             return ""
         if mask is not None:
@@ -64,7 +86,18 @@ class EnglishOcr:
                         scores.append(float(res[0][1]))
                 if texts:
                     self.last_score = sum(scores) / len(scores)
-                    return normalize_english(" ".join(texts))
+                    text = normalize_english(" ".join(texts))
+                    if self.last_score >= 0.6 and not is_junk_english(text):
+                        return text
+                    # thick outlines can join neighbouring lines into one tall "line" (white
+                    # captions with a black rim): let RapidOCR find the lines and keep the
+                    # better reading
+                    alt = self._detect_and_read(part)
+                    letters = lambda s: sum(c.isalpha() for c in s)  # noqa: E731
+                    if alt and not is_junk_english(alt) and letters(alt) > letters(text):
+                        self.last_score = 0.9
+                        return alt
+                    return text
         self.last_score = 0.0
         return self._detect_and_read(part)
 
