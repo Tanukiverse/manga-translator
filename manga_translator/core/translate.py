@@ -45,7 +45,7 @@ SHORT_CHARS = 10  # source bubbles with at most this many letters get a "short" 
 @dataclass
 class TranslatorConfig:
     url: str = "http://localhost:11434"
-    model: str = "qwen3.5:4b"
+    model: str = "hf.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive:Q4_K_M"
     temperature: float = 0.3
     keep_alive: str = "5m"
     timeout: float = 300.0

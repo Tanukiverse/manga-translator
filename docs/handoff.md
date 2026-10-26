@@ -1,7 +1,7 @@
 # Handoff: Manga Translator
 
 ## สถานะ (2026-10-26)
-MVP ครบ pipeline ทีละหน้า ภาษาต้นฉบับญี่ปุ่นและอังกฤษ แปลด้วย Ollama `qwen3.5:4b` มี UI หน้าต่างเดียวและ CLI
+MVP ครบ pipeline ทีละหน้า ภาษาต้นฉบับญี่ปุ่นและอังกฤษ แปลด้วย Ollama (ค่าเริ่มต้น Gemma-4-E4B Uncensored Q4_K_M ซึ่งแปลหน้าจริงได้แม่นกว่า qwen3.5:4b และ Qwen3.5-9B Uncensored) มี UI หน้าต่างเดียวและ CLI
 pytest ผ่าน 24 ข้อ (รวม Ollama จริงและ LaMa บน GPU) ส่วน `tools/ui_smoke.py` เปิดหน้าต่างจริง รันครบ 5 ขั้น แก้คำแปล แล้ว Undo/Redo ได้
 
 ## โครงสร้าง

@@ -14,7 +14,7 @@ class Settings:
     source_lang: str = "ja"
     target_lang: str = "th"
     ollama_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen3.5:4b"
+    ollama_model: str = "hf.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive:Q4_K_M"
     ollama_keep_alive: str = "5m"
     font_family: str = ""  # empty = per-language default
     text_color: str = "#000000"
