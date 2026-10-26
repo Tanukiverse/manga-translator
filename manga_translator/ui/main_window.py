@@ -73,6 +73,7 @@ def ui_style(size: int) -> str:
         QToolBar#main QComboBox {{ padding: {pad_v - 2}px 8px; min-width: 7em; font-size: {size + 1}pt; }}
         QToolBar#main QLabel {{ font-size: {size + 1}pt; }}
         QPushButton {{ padding: {pad_v - 1}px {pad_h - 2}px; }}
+        QSpinBox, QDoubleSpinBox {{ min-width: 4.5em; padding-right: 2px; }}
         QMenuBar {{ font-size: {size}pt; }}
         QMenuBar::item {{ padding: 4px 10px; }}
         QMenu {{ font-size: {size}pt; }}
