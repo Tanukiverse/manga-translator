@@ -122,7 +122,13 @@ def run_detect(doc: PageDoc, models: Models, progress: Progress | None = None) -
     next_id = max((r.id for r in locked), default=0) + 1
     for i in order:
         x, y, w, h = fresh[i].bbox
-        regions.append(Region(id=next_id, bbox=[x, y, w, h], vertical=doc.source_lang == "ja" and h > w * 1.2))
+        regions.append(Region(
+            id=next_id,
+            bbox=[x, y, w, h],
+            vertical=doc.source_lang == "ja" and h > w * 1.2,
+            color=models.settings.text_color or "#000000",
+            outline=models.settings.outline_color,
+        ))
         next_id += 1
     doc.regions = regions
     old_mask = doc.load_layer("mask")

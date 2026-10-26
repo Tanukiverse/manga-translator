@@ -1,0 +1,47 @@
+# Manga Translator
+
+โปรแกรม Windows สำหรับแปลมังงะในเครื่อง ทำงานทีละขั้นและแก้ไขได้ทุกขั้น:
+
+1. **ตรวจจับข้อความ**: ใช้ comic-text-detector หากล่องข้อความและพื้นที่ตัวอักษร
+2. **อ่านข้อความ**: ภาษาญี่ปุ่นใช้ manga-ocr (อ่านแนวตั้งได้) ภาษาอังกฤษใช้ RapidOCR
+3. **แปล**: ใช้โมเดลใน Ollama ส่งทั้งหน้าในคำขอเดียวเพื่อให้โมเดลเห็นบริบท และรองรับอภิธานศัพท์
+4. **ลบคำ**: บอลลูนพื้นเรียบใช้การเติมสีพื้น พื้นที่มีลายใช้ LaMa บน GPU โดยเปลี่ยนเฉพาะพิกเซลในพื้นที่ลบ
+5. **ใส่คำแปล**: ตัดคำไทยด้วย pythainlp และไม่ตัดกลางคำ ปรับขนาดฟอนต์ให้พอดีบอลลูนอัตโนมัติ
+
+## เปิดโปรแกรม
+ดับเบิลคลิก `Start MangaTranslator.bat` แล้วกด **เปิดโฟลเดอร์ภาพ** จากนั้นกด **▶ ทำทั้งหมด** (F5) หรือกดทีละขั้น 1–5
+ต้องเปิด Ollama ไว้ก่อน (โมเดลเริ่มต้นคือ `qwen3.5:4b` เปลี่ยนได้ใน ⚙ ตั้งค่า)
+
+- **แก้คำแปล:** เลือกกล่องทางขวาแล้วพิมพ์ ภาพจะอัปเดตเอง กล่องที่แก้เองจะถูก 🔒 ล็อก และขั้นอัตโนมัติจะไม่เขียนทับ
+- **ย้าย/ปรับกล่อง:** ใช้โหมด "เลือก/ย้าย" ลากกล่อง หรือลากมุมขวาล่างเพื่อปรับขนาด ส่วน "+ กล่อง" ใช้ลากสร้างกล่องใหม่
+- **ลบตัวอักษรไม่หมด:** ใช้ "ระบายส่วนที่จะลบ" หรือ "ยางลบ" แล้วกด "4. ลบคำ" อีกครั้ง
+- **ย้อนกลับ:** Ctrl+Z / Ctrl+Y
+- **บันทึกผล:** 💾 Export (Ctrl+S) บันทึกทุกหน้าที่ใส่คำแปลแล้วเป็น PNG
+- ไฟล์ทำงานอยู่ที่ `work/<ชื่อโฟลเดอร์>/<ชื่อหน้า>/` (original, mask, cleaned, final, page.json)
+- ใส่ฟอนต์ `.ttf`/`.otf` เพิ่มได้ในโฟลเดอร์ `fonts/` แล้วเลือกใช้ในตั้งค่าหรือต่อกล่อง
+
+## CLI
+```
+.venv\Scripts\python -m manga_translator.cli page.png --from ja --to th
+```
+
+## ติดตั้งใหม่
+```
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m pip uninstall -y opencv-python opencv-python-headless
+.venv\Scripts\python -m pip install opencv-python-headless==5.0.0.93
+.venv\Scripts\python tools\download_models.py
+```
+rapidocr ดึง `opencv-python` (ตัวที่มี Qt) มาด้วยและชนกับตัว headless จึงต้องถอนออกแล้วติดตั้งเฉพาะตัว headless
+
+## ทดสอบ
+```
+.venv\Scripts\python -m pytest -q
+.venv\Scripts\python tools\ui_smoke.py <โฟลเดอร์ภาพ> <โฟลเดอร์งานชั่วคราว> <screenshot.png>
+```
+เทสต์ใช้หน้ามังงะสังเคราะห์จาก `tests/synth.py` ไม่ต้องใช้ภาพที่มีลิขสิทธิ์ เทสต์ `test_real_ollama` จะข้ามเองถ้าไม่ได้เปิด Ollama
+
+## สัญญาอนุญาตของโมเดล
+comic-text-detector เป็น GPL-3.0 จึงใช้ส่วนตัวได้ ถ้าจะแจกจ่ายโปรแกรมต้องตรวจเงื่อนไขก่อน ส่วน manga-ocr (Apache-2.0) และ LaMa (Apache-2.0) ก็ควรตรวจเงื่อนไขเช่นกัน

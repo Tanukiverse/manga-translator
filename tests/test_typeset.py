@@ -1,5 +1,4 @@
 import numpy as np
-from pythainlp.tokenize import word_tokenize
 
 from manga_translator.core.project import Region
 from manga_translator.core.typeset import bubble_rect, fit_text, render, tokenize
@@ -9,7 +8,7 @@ TEXT = "วันนี้อากาศดีมากเลยนะ ไป�
 
 def _word_boundaries(text):
     pos, out = 0, {0}
-    for tok in word_tokenize(text, engine="newmm", keep_whitespace=True):
+    for tok in tokenize(text, "th"):
         pos += len(tok)
         out.add(pos)
     return out
@@ -24,6 +23,11 @@ def test_thai_wraps_only_between_words():
     for line in lay.lines[:-1]:
         pos += len(line.replace(" ", ""))
         assert pos in bounds, f"line break inside a word after {line!r}"
+
+
+def test_colloquial_words_not_split():
+    toks = tokenize("จริงเหรอ...?", "th")
+    assert toks == ["จริง", "เหรอ...?"]
 
 
 def test_fit_shrinks_for_small_box():

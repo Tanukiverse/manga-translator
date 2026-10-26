@@ -5,6 +5,7 @@ only at word boundaries. The font size is the largest that fits the bubble inter
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import cv2
@@ -48,7 +49,18 @@ def tokenize(text: str, lang: str) -> list[str]:
     if lang == "th":
         from pythainlp.tokenize import word_tokenize
 
-        return [t for t in word_tokenize(text, engine="newmm", keep_whitespace=True) if t]
+        # tokenize Thai runs only: punctuation inside a run confuses newmm ("เหรอ..." -> "เห|รอ.")
+        out: list[str] = []
+        for run in re.findall(r"[฀-๿]+|\s+|[^฀-๿\s]+", text):
+            if run.isspace():
+                out.append(" ")
+            elif "฀" <= run[0] <= "๿":
+                out.extend(t for t in word_tokenize(run, custom_dict=_thai_dict(), engine="newmm") if t)
+            elif out and out[-1] != " ":
+                out[-1] += run  # keep "?!…" on the word they follow, never at a line start
+            else:
+                out.append(run)
+        return out
     if lang in ("ja", "zh"):
         return list(text)
     out: list[str] = []
@@ -57,6 +69,30 @@ def tokenize(text: str, lang: str) -> list[str]:
             out.append(" ")
         out.append(word)
     return out
+
+
+# colloquial words common in manga dialogue that the default dictionary splits (เหรอ -> เห|รอ)
+THAI_EXTRA_WORDS = [
+    "เหรอ", "หรอ", "หรือเปล่า", "รึเปล่า", "เปล่า", "ป่ะ", "มั้ย", "ไหมล่ะ", "จ้ะ", "จ๊ะ", "จ้า", "ค่ะ", "คะ", "นะคะ",
+    "นะครับ", "ครับผม", "ล่ะ", "เนอะ", "เนี่ย", "นี่", "ไง", "งั้น", "งี้", "อ่ะ", "อะ", "เว้ย", "ว่ะ", "โว้ย", "ฮะ",
+    "คับ", "เฮ้ย", "เอ๊ะ", "อ้าว", "โอ้", "ว้าว", "อืม", "ฮึ", "เฮ้อ", "แหละ", "หรอก", "สิ", "ซะ", "เถอะ", "น่ะ",
+]
+_dict = None
+
+
+def _thai_dict():
+    global _dict
+    if _dict is None:
+        from pythainlp.corpus import thai_words
+        from pythainlp.util import Trie
+
+        _dict = Trie(set(thai_words()) | set(THAI_EXTRA_WORDS))
+    return _dict
+
+
+def max_size_for(page_shape) -> int:
+    """Upper bound for auto font size so short lines do not become poster-sized."""
+    return max(14, min(MAX_SIZE, round(min(page_shape[:2]) * 0.045)))
 
 
 def _split_long(token: str, fm, width: float) -> list[str]:
@@ -109,7 +145,8 @@ class Layout:
     fits: bool
 
 
-def fit_text(text: str, lang: str, family: str, rect_w: float, rect_h: float, fixed_size: int = 0) -> Layout:
+def fit_text(text: str, lang: str, family: str, rect_w: float, rect_h: float, fixed_size: int = 0,
+             max_size: int = MAX_SIZE) -> Layout:
     ensure_qt()
     from PySide6.QtGui import QFont, QFontMetricsF
 
@@ -129,7 +166,7 @@ def fit_text(text: str, lang: str, family: str, rect_w: float, rect_h: float, fi
         return layout(fixed_size, True)
 
     def search(allow_break: bool) -> Layout | None:
-        lo, hi = MIN_SIZE, max(MIN_SIZE, min(MAX_SIZE, int(rect_h)))
+        lo, hi = MIN_SIZE, max(MIN_SIZE, min(max_size, int(rect_h)))
         best = None
         while lo <= hi:
             mid = (lo + hi) // 2
@@ -191,7 +228,7 @@ def render(cleaned_bgr: np.ndarray, regions, lang: str, default_family: str = ""
             continue
         rx, ry, rw, rh = bubble_rect(cleaned_bgr, r.bbox)
         family = r.font_family or family_default
-        lay = fit_text(text, lang, family, rw, rh, r.font_size)
+        lay = fit_text(text, lang, family, rw, rh, r.font_size, max_size_for(cleaned_bgr.shape))
         if not lay.fits:
             overflow.append(r.id)
         font = QFont(family)
