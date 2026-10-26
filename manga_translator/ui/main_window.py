@@ -10,6 +10,7 @@ from PySide6.QtCore import QLocale, QSize, Qt, QTimer, Slot
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core import importer
 from ..core.export import AutoSaver
 from ..core.pages import SORT_KEYS, SORT_LABELS, load_order, save_order, sort_pages
 from ..core.pipeline import STEP_LABELS, STEPS, Models, run_typeset
@@ -84,6 +86,7 @@ class MainWindow(QMainWindow):
         self.ai.runner.page_failed.connect(self._page_failed)
         self.ai.runner.page_saved.connect(self._page_saved)
         self._build()
+        self.setAcceptDrops(True)
         self._update_actions()
 
     # ================================================================ UI
@@ -96,6 +99,8 @@ class MainWindow(QMainWindow):
 
         open_act = QAction("📂 เปิดโฟลเดอร์ภาพ", self, shortcut=QKeySequence.StandardKey.Open, triggered=self.open_folder)
         tb.addAction(open_act)
+        tb.addAction(QAction("📦 เปิดไฟล์บีบอัด", self, triggered=self.open_archive_dialog,
+                             toolTip="เปิดตอนจากไฟล์ ZIP / CBZ / RAR / CBR / 7Z"))
         tb.addSeparator()
         self.src_combo = QComboBox()
         for code in SOURCE_LANGS:
@@ -229,8 +234,11 @@ class MainWindow(QMainWindow):
         self.canvas.region_added.connect(self._canvas_added)
         self.canvas.mask_edit_started.connect(self.push_undo)
         self.canvas.mask_edited.connect(self._mask_edited)
+        # drops of files land on the window (handled below), not on the page canvas
+        self.canvas.setAcceptDrops(False)
+        self.canvas.viewport().setAcceptDrops(False)
         cl.addWidget(self.canvas, 1)
-        self.hint = QLabel("เปิดโฟลเดอร์ภาพมังงะเพื่อเริ่ม  ·  ล้อเมาส์ = ซูม  ·  ปุ่มกลางเมาส์ = เลื่อนภาพ")
+        self.hint = QLabel("ลากโฟลเดอร์ ภาพ หรือไฟล์ ZIP/CBZ/CBR มาวางในหน้าต่างเพื่อเริ่ม  ·  ล้อเมาส์ = ซูม  ·  ปุ่มกลางเมาส์ = เลื่อนภาพ")
         self.hint.setStyleSheet("color:#888; padding:2px 8px;")
         cl.addWidget(self.hint)
 
@@ -263,7 +271,11 @@ class MainWindow(QMainWindow):
         if not folder:
             return
         folder = Path(folder)
+        work_dir = Path(self.settings.work_dir) / folder.name
         files = [p for p in folder.iterdir() if p.suffix.lower() in IMAGE_EXT]
+        added = work_dir / importer.ADDED  # images dropped onto this chapter earlier (copies)
+        if added.is_dir():
+            files += [p for p in added.iterdir() if importer.is_image(p)]
         if not files:
             QMessageBox.information(self, "ไม่พบภาพ", "โฟลเดอร์นี้ไม่มีไฟล์ภาพ (png, jpg, webp)")
             return
@@ -276,6 +288,64 @@ class MainWindow(QMainWindow):
         self.images = self._sorted(files)
         self._populate(keep=None)
         self.setWindowTitle(f"Manga Translator — {folder}")
+
+    # ---- bringing pages in: drag & drop, archives
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls() and any(u.isLocalFile() for u in e.mimeData().urls()):
+            e.acceptProposedAction()
+
+    def dragMoveEvent(self, e):
+        self.dragEnterEvent(e)
+
+    def dropEvent(self, e):
+        paths = [Path(u.toLocalFile()) for u in e.mimeData().urls() if u.isLocalFile()]
+        e.acceptProposedAction()
+        self.open_paths(paths)
+
+    def open_archive_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(self, "เลือกไฟล์บีบอัดของตอน", "",
+                                              "ไฟล์บีบอัด (*.zip *.cbz *.rar *.cbr *.7z *.cb7)")
+        if path:
+            self.open_paths([Path(path)])
+
+    def open_paths(self, paths: list[Path]):
+        """Open what was dropped (or passed on the command line): a folder, an archive, or images.
+        Images go into the open chapter, or into a new one when none is open. Only copies are made."""
+        if self.busy:
+            self.statusBar().showMessage("กำลังประมวลผลอยู่ รอให้เสร็จก่อนแล้วค่อยลากไฟล์มาใหม่", 6000)
+            return
+        folders, archives, images, other = importer.classify(paths)
+        extra = len(folders) + len(archives) - 1
+        try:
+            if folders:
+                self.open_folder(str(folders[0]))
+            elif archives:
+                self.statusBar().showMessage(f"กำลังแตกไฟล์ {archives[0].name} …")
+                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+                try:
+                    chapter = importer.import_archive(archives[0], Path(self.settings.work_dir))
+                finally:
+                    QApplication.restoreOverrideCursor()
+                self.open_folder(str(chapter))
+            elif images:
+                if self.folder and self.work_dir:
+                    importer.copy_images(images, self.work_dir / importer.ADDED)
+                    keep = self._current_path
+                    self.open_folder(str(self.folder))
+                    if keep in self.images:
+                        self.pages.setCurrentRow(self.images.index(keep))
+                    self.statusBar().showMessage(f"เพิ่ม {len(images)} ภาพเข้าตอนนี้แล้ว (คัดลอก ไม่แตะไฟล์ต้นฉบับ)", 6000)
+                else:
+                    self.open_folder(str(importer.new_chapter_from_images(images, Path(self.settings.work_dir))))
+            elif other:
+                QMessageBox.information(self, "เปิดไฟล์นี้ไม่ได้",
+                                        "ลากโฟลเดอร์ ภาพ (png, jpg, webp) หรือไฟล์ ZIP/CBZ/RAR/CBR/7Z มาวางได้")
+                return
+        except (importer.ImportFailed, OSError) as err:
+            QMessageBox.warning(self, "เปิดไม่สำเร็จ", str(err))
+            return
+        if extra > 0:
+            self.statusBar().showMessage(f"เปิดได้ทีละตอน: เปิดตอนแรกแล้ว อีก {extra} รายการไม่ได้เปิด", 8000)
 
     def _sorted(self, files: list[Path]) -> list[Path]:
         key = self.sort_combo.currentData()

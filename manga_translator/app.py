@@ -21,8 +21,10 @@ def main() -> int:
     ensure_qt()  # register bundled fonts
     win = MainWindow()
     win.show()
-    if len(sys.argv) > 1:
-        win.open_folder(sys.argv[1])
+    if len(sys.argv) > 1:  # folder, archive or images dropped on the launcher
+        from pathlib import Path
+
+        win.open_paths([Path(a) for a in sys.argv[1:]])
     return app.exec()
 
 
