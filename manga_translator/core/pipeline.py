@@ -194,17 +194,37 @@ def run_ocr(doc: PageDoc, models: Models, progress: Progress | None = None) -> N
 
         for r, t in zip(todo, uppercase_page([r.source_text for r in todo])):
             r.source_text = t
-    from .ocr import is_junk_english
-
     for r in todo:
-        # nothing readable, or noise from art/SFX: leave the original pixels alone
-        r.skip = not r.source_text.strip() or (doc.source_lang == "en" and is_junk_english(r.source_text))
-    skipped = sum(r.skip for r in todo)
+        r.skip_reason = _skip_reason(doc.source_lang, r, engine, img)
+        r.skip = bool(r.skip_reason)
+    skipped = [r for r in todo if r.skip]
     if skipped:
-        _log(progress, f"ข้าม {skipped} กล่องที่ไม่ใช่ข้อความ (ไม่ลบ ไม่แปล)")
+        foreign = sum(r.skip_reason == "foreign" for r in skipped)
+        _log(progress, f"ข้าม {len(skipped)} กล่อง (ภาษาอื่น {foreign}, ไม่ใช่ข้อความ {len(skipped) - foreign}) ไม่ลบ ไม่แปล")
     _invalidate_after(doc, "ocr")
     doc.done["ocr"] = True
     doc.save()
+
+
+def _skip_reason(lang: str, r: Region, engine, img) -> str:
+    """Why a box should be left untouched: "foreign" (not the source language), "noise"
+    (OCR read art or sound effects), "empty", or "" to translate it."""
+    from .ocr import is_junk_english, is_latin_only
+
+    text = r.source_text.strip()
+    if lang == "ja":
+        if not text:
+            return "empty"
+        return "foreign" if is_latin_only(text) else ""
+    if lang == "en":
+        junk = not text or is_junk_english(text)
+        # a Japanese box read by the English recognizer comes out as junk or with low confidence;
+        # only then is the slower kanji/kana check worth it
+        if (junk or getattr(engine, "last_score", 1.0) < 0.85) and engine.looks_cjk(img, r.bbox):
+            return "foreign"
+        if junk:
+            return "noise" if text else "empty"
+    return ""
 
 
 def run_translate(doc: PageDoc, models: Models, progress: Progress | None = None) -> None:

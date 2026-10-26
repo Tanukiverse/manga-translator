@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 ALIGNS = [("center", "กึ่งกลาง"), ("left", "ชิดซ้าย"), ("right", "ชิดขวา")]
+SKIP_LABELS = {"foreign": "ภาษาอื่น", "noise": "ไม่ใช่ข้อความ", "empty": "อ่านไม่ได้", "user": "ข้าม"}
 WRAPS = [("auto", "ตัดบรรทัดอัตโนมัติ"), ("manual", "ตัดเฉพาะที่กด Enter")]
 
 
@@ -149,7 +150,7 @@ class RegionPanel(QWidget):
         self.outline.changed.connect(lambda v: self._emit({"outline": v}))
         self.locked.toggled.connect(lambda v: self._emit({"locked": v}))
         # deciding by hand locks the box, so re-running OCR keeps the choice
-        self.skip.toggled.connect(lambda v: self._emit({"skip": v, "locked": True}))
+        self.skip.toggled.connect(lambda v: self._emit({"skip": v, "skip_reason": "user" if v else "", "locked": True}))
         self.set_enabled(False)
 
     # ---- data in -----------------------------------------------------
@@ -172,7 +173,7 @@ class RegionPanel(QWidget):
     def _label(r) -> str:
         src = (r.source_text or "…").replace("\n", " ")[:24]
         tr = (r.translation or "").replace("\n", " ")[:24]
-        lock = ("⊘ " if r.skip else "") + ("🔒 " if r.locked else "")
+        lock = (f"⊘ {SKIP_LABELS.get(r.skip_reason, 'ข้าม')} · " if r.skip else "") + ("🔒 " if r.locked else "")
         return f"{lock}{r.id}. {src}\n    → {tr}"
 
     def refresh_label(self, r):

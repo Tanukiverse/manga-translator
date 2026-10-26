@@ -37,6 +37,7 @@ class Region:
     wrap: str = "auto"  # "auto": wrap to fit + Enter breaks; "manual": break only where the user pressed Enter
     locked: bool = False  # skip in automatic steps; user edited it
     skip: bool = False  # not text (OCR read noise from art/SFX): never erased, translated or drawn
+    skip_reason: str = ""  # "foreign" (another language than the source), "noise", "empty", "user"
     text_rect: list[int] | None = None  # x, y, w, h where the user put the translation; None = auto
 
     @property

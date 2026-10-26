@@ -43,6 +43,8 @@ class EnglishOcr:
 
         kw = {"rec_model_path": str(EN_REC_MODEL)} if EN_REC_MODEL.exists() else {}
         self.engine = RapidOCR(**kw)
+        self._cjk = None  # RapidOCR's bundled Chinese/English model, loaded on first need
+        self.last_score = 1.0  # mean recognition confidence of the last box read
 
     def __call__(self, img_bgr: np.ndarray, bbox, mask: np.ndarray | None = None) -> str:
         pad = 6
@@ -52,16 +54,33 @@ class EnglishOcr:
         if mask is not None:
             lines = text_lines(cv2.cvtColor(part, cv2.COLOR_BGR2GRAY), crop(mask, bbox, pad=pad))
             if lines:
-                texts = []
+                texts, scores = [], []
                 for y0, y1, x0, x1 in lines:
                     lc = part[max(0, y0 - 2):y1 + 2, max(0, x0 - 2):x1 + 2]
                     lc = cv2.copyMakeBorder(lc, 4, 4, 8, 8, cv2.BORDER_REPLICATE)
                     res, _ = self.engine(lc, use_det=False, use_cls=False)
                     if res and res[0][0].strip():
                         texts.append(res[0][0].strip())
+                        scores.append(float(res[0][1]))
                 if texts:
+                    self.last_score = sum(scores) / len(scores)
                     return normalize_english(" ".join(texts))
+        self.last_score = 0.0
         return self._detect_and_read(part)
+
+    def looks_cjk(self, img_bgr: np.ndarray, bbox) -> bool:
+        """True when the box holds Japanese/Chinese lettering. The English recognizer cannot read
+        it and guesses Latin noise, so a recognizer that knows kanji/kana looks again."""
+        if self._cjk is None:
+            from rapidocr_onnxruntime import RapidOCR
+
+            self._cjk = RapidOCR()
+        part = cv2.copyMakeBorder(crop(img_bgr, bbox, pad=6), 20, 20, 20, 20, cv2.BORDER_REPLICATE)
+        res, _ = self._cjk(part)
+        text = "".join(r[1] for r in res or [])
+        cjk = sum(is_cjk(c) for c in text)
+        latin = sum(c.isascii() and c.isalpha() for c in text)
+        return cjk >= 1 and cjk >= latin
 
     def _detect_and_read(self, part: np.ndarray) -> str:
         # a margin around tight crops makes the line detector keep words together
@@ -184,7 +203,20 @@ def is_junk_english(text: str) -> bool:
     words = [w.strip("'").upper() for w in tokens if w.strip("'").isalpha()]
     real = [w for w in words if (len(w) >= 2 and (re.search(r"[AEIOUY]", w) or _VOWELLESS.match(w)))
             or w in ("I", "A", "O")]
+    if real and all(len(w) == 1 for w in real) and sum(c.isdigit() for c in t) > sum(c.isalpha() for c in t):
+        return True  # "11 I 1 0 6 3": digits with a stray letter, e.g. vertical Japanese page numbers
     return not real
+
+
+def is_cjk(c: str) -> bool:
+    return "\u3040" <= c <= "\u30ff" or "\u4e00" <= c <= "\u9fff" or "\uff66" <= c <= "\uff9f"
+
+
+def is_latin_only(text: str) -> bool:
+    """manga-ocr output with Latin letters and no kana/kanji: an English (or other Latin) box
+    inside a Japanese page."""
+    t = unicodedata.normalize("NFKC", text)
+    return any(c.isascii() and c.isalpha() for c in t) and not any(is_cjk(c) for c in t)
 
 
 def uppercase_page(texts: list[str]) -> list[str]:

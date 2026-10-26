@@ -9,12 +9,12 @@ from manga_translator.core.translate import pick_one
 from manga_translator.core.typeset import render
 
 
-@pytest.mark.parametrize("text", ["$7R6AH-7.", "S 6 MT 1 1 2 5", "S", "X9Q", "Q#Z"])
+@pytest.mark.parametrize("text", ["$7R6AH-7.", "S 6 MT 1 1 2 5", "S", "X9Q", "Q#Z", "11 I 1 0 6 3"])
 def test_junk_is_detected(text):
     assert is_junk_english(text)
 
 
-@pytest.mark.parametrize("text", ["?", "...", "HM?", "I SEE...", "OK", "A-AH!", "MM...", "3000-MAN ARMY", "WHOA?!", "NO!"])
+@pytest.mark.parametrize("text", ["?", "...", "HM?", "I SEE...", "OK", "A-AH!", "MM...", "3000-MAN ARMY", "WHOA?!", "NO!", "I 2"])
 def test_real_lettering_is_kept(text):
     assert not is_junk_english(text)
 
@@ -71,3 +71,41 @@ def test_paragraph_with_aligned_word_spaces_is_not_split():
         mask[20 + i * 30:42 + i * 30, 20:250] = 255
         mask[20 + i * 30:42 + i * 30, 290:560] = 255
     assert len(split_side_by_side((10, 10, 570, 80), mask)) == 1
+
+
+class _FakeEnglish:
+    def __init__(self, score, cjk):
+        self.last_score, self._cjk_answer, self.asked = score, cjk, 0
+
+    def looks_cjk(self, img, bbox):
+        self.asked += 1
+        return self._cjk_answer
+
+
+def test_japanese_box_on_english_page_is_left_alone():
+    from manga_translator.core.pipeline import _skip_reason
+
+    eng = _FakeEnglish(score=0.6, cjk=True)
+    assert _skip_reason("en", Region(1, [0, 0, 10, 10], source_text="S 6 MT 1 1 2 5"), eng, None) == "foreign"
+
+
+def test_clean_english_box_skips_the_slow_check():
+    from manga_translator.core.pipeline import _skip_reason
+
+    eng = _FakeEnglish(score=0.97, cjk=True)
+    assert _skip_reason("en", Region(1, [0, 0, 10, 10], source_text="GOOD MORNING."), eng, None) == ""
+    assert eng.asked == 0  # confident English: no extra OCR pass
+
+
+def test_noise_that_is_not_japanese():
+    from manga_translator.core.pipeline import _skip_reason
+
+    eng = _FakeEnglish(score=0.5, cjk=False)
+    assert _skip_reason("en", Region(1, [0, 0, 10, 10], source_text="$7R6AH-7."), eng, None) == "noise"
+
+
+def test_english_box_on_japanese_page_is_left_alone():
+    from manga_translator.core.pipeline import _skip_reason
+
+    assert _skip_reason("ja", Region(1, [0, 0, 10, 10], source_text="ＢＯＯＭ！"), None, None) == "foreign"
+    assert _skip_reason("ja", Region(1, [0, 0, 10, 10], source_text="ＯＫだよ"), None, None) == ""
