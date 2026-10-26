@@ -8,6 +8,29 @@
 4. **ลบคำ**: บอลลูนพื้นเรียบใช้การเติมสีพื้น พื้นที่มีลายใช้ LaMa บน GPU โดยเปลี่ยนเฉพาะพิกเซลในพื้นที่ลบ
 5. **ใส่คำแปล**: ตัดคำไทยด้วย pythainlp และไม่ตัดกลางคำ ปรับขนาดฟอนต์ให้พอดีบอลลูนอัตโนมัติ
 
+## ติดตั้งในเครื่องใหม่
+ต้องมี: Windows 10/11, [Python 3.12](https://www.python.org/downloads/), [Git](https://git-scm.com/download/win) และ [Ollama](https://ollama.com/download) ส่วนการ์ดจอ NVIDIA ไม่บังคับ แต่ถ้ามีจะลบคำบนพื้นที่มีลายได้เร็วกว่ามาก
+
+```
+git clone https://github.com/pong0101/manga-translator.git
+cd manga-translator
+setup.bat
+```
+`setup.bat` จะทำให้ทั้งหมด:
+- สร้าง `.venv`
+- ติดตั้ง PyTorch (ถ้าเจอการ์ด NVIDIA ใช้รุ่น CUDA 12.8 ถ้าไม่เจอใช้รุ่น CPU)
+- ติดตั้งไลบรารี
+- ดาวน์โหลดโมเดล AI ราว 750 MB ลง `models/` และตรวจ hash
+- ถามว่าจะดึงโมเดลแปลของ Ollama เลยไหม (ราว 6.3 GB)
+
+ถ้ายังไม่ได้ดึงโมเดลแปล ใช้คำสั่งนี้ทีหลังได้:
+```
+ollama pull hf.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive:Q4_K_M
+```
+อัปเดตเป็นเวอร์ชันล่าสุด: `git pull` แล้วรัน `setup.bat` อีกครั้ง (ส่วนที่ติดตั้งแล้วจะถูกข้าม)
+
+การตั้งค่า (`settings.json`) ไฟล์งาน (`work/`) และโมเดล ไม่ได้อยู่ใน git แต่ละเครื่องจึงมีชุดของตัวเอง
+
 ## เปิดโปรแกรม
 ดับเบิลคลิก `Start MangaTranslator.bat` แล้วกด **เปิดโฟลเดอร์ภาพ** จากนั้นกด **▶ ทำทั้งหมด** (F5) หรือกดทีละขั้น 1–5
 ต้องเปิด Ollama ไว้ก่อน (โมเดลเริ่มต้นคือ Gemma-4-E4B Uncensored `hf.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive:Q4_K_M` ดึงด้วย `ollama pull` ชื่อนี้ เปลี่ยนได้ใน ⚙ ตั้งค่า)
@@ -31,7 +54,7 @@
 .venv\Scripts\python -m manga_translator.cli page.png --from ja --to th
 ```
 
-## ติดตั้งใหม่
+## ติดตั้งเองทีละคำสั่ง (ถ้าไม่ใช้ setup.bat)
 ```
 py -3.12 -m venv .venv
 .venv\Scripts\python -m pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
@@ -40,7 +63,7 @@ py -3.12 -m venv .venv
 .venv\Scripts\python -m pip install opencv-python-headless==5.0.0.93
 .venv\Scripts\python tools\download_models.py
 ```
-rapidocr ดึง `opencv-python` (ตัวที่มี Qt) มาด้วยและชนกับตัว headless จึงต้องถอนออกแล้วติดตั้งเฉพาะตัว headless
+ถ้าไม่มีการ์ด NVIDIA ให้เปลี่ยน `cu128` เป็น `cpu` ส่วน rapidocr จะดึง `opencv-python` (ตัวที่มี Qt) มาด้วย ซึ่งชนกับตัว headless จึงต้องถอนออกแล้วติดตั้งเฉพาะตัว headless
 
 ## ทดสอบ
 ```
