@@ -17,7 +17,7 @@ from .ui.main_window import MainWindow  # noqa: E402
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Manga Translator")
-    app.setFont(QFont("Leelawadee UI", 10))
+    app.setFont(QFont("Leelawadee UI", 11))  # MainWindow applies the size from settings
     ensure_qt()  # register bundled fonts
     win = MainWindow()
     win.show()

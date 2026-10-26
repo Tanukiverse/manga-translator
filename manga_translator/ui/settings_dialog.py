@@ -89,6 +89,13 @@ class SettingsDialog(QDialog):
         crow.addStretch()
         form.addRow("สีเริ่มต้น", crow)
 
+        self.ui_size = QSpinBox()
+        self.ui_size.setRange(9, 18)
+        self.ui_size.setValue(settings.ui_font_size)
+        self.ui_size.setSuffix(" pt")
+        self.ui_size.setToolTip("ขนาดตัวอักษร ปุ่ม และเมนูของโปรแกรม (มีผลทันทีที่กด OK)")
+        form.addRow("ขนาดตัวอักษรโปรแกรม", self.ui_size)
+
         self.gpu = QCheckBox("ใช้ GPU สำหรับ OCR ญี่ปุ่นและ LaMa")
         self.gpu.setChecked(settings.use_gpu)
         form.addRow("", self.gpu)
@@ -207,6 +214,7 @@ class SettingsDialog(QDialog):
         s.text_color = self.color.value or "#000000"
         s.outline_color = self.outline.value
         s.use_gpu = self.gpu.isChecked()
+        s.ui_font_size = self.ui_size.value()
         s.glossary = parse_glossary(self.glossary.toPlainText())
         s.story_notes = self.notes.toPlainText().strip()
         s.autosave = self.autosave.isChecked()

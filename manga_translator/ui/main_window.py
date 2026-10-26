@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QLocale, QSize, Qt, QTimer, Slot
-from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence, QPixmap
+from PySide6.QtGui import QAction, QActionGroup, QFont, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -20,12 +20,15 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QSplitter,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -48,6 +51,33 @@ SOURCE_LANGS = ["ja", "en"]
 TARGET_LANGS = ["th", "en", "ja", "zh", "ko", "vi", "id"]
 LAYERS = [("original", "ต้นฉบับ"), ("cleaned", "ลบคำแล้ว"), ("final", "ผลลัพธ์")]
 UNDO_LIMIT = 40
+
+
+def _spaced(label: QLabel) -> QLabel:
+    label.setContentsMargins(8, 0, 4, 0)
+    return label
+
+
+def _group_label(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setStyleSheet("color: palette(placeholder-text); padding-right: 4px;")
+    return label
+
+
+def ui_style(size: int) -> str:
+    """Bigger, evenly padded controls; the size follows the font size chosen in settings."""
+    pad_v, pad_h = max(4, size // 2), max(8, size)
+    return f"""
+        QToolBar#main {{ spacing: 6px; padding: 4px 6px; }}
+        QToolBar#main QToolButton {{ padding: {pad_v}px {pad_h}px; font-size: {size + 1}pt; }}
+        QToolBar#main QComboBox {{ padding: {pad_v - 2}px 8px; min-width: 7em; font-size: {size + 1}pt; }}
+        QToolBar#main QLabel {{ font-size: {size + 1}pt; }}
+        QPushButton {{ padding: {pad_v - 1}px {pad_h - 2}px; }}
+        QMenuBar {{ font-size: {size}pt; }}
+        QMenuBar::item {{ padding: 4px 10px; }}
+        QMenu {{ font-size: {size}pt; }}
+        QMenu::item {{ padding: 6px 28px 6px 18px; }}
+    """
 
 
 class MainWindow(QMainWindow):
@@ -86,21 +116,75 @@ class MainWindow(QMainWindow):
         self.ai.runner.page_failed.connect(self._page_failed)
         self.ai.runner.page_saved.connect(self._page_saved)
         self._build()
+        self.apply_ui_size(self.settings.ui_font_size)
         self.setAcceptDrops(True)
         self._update_actions()
 
     # ================================================================ UI
     def _build(self):
+        # actions live in the menu bar; the toolbar shows only the everyday ones, in groups
+        self.open_act = QAction("📂 เปิดโฟลเดอร์ภาพ…", self, shortcut=QKeySequence.StandardKey.Open,
+                                triggered=lambda: self.open_folder())
+        self.archive_act = QAction("📦 เปิดไฟล์บีบอัด…", self, triggered=self.open_archive_dialog,
+                                   toolTip="เปิดตอนจากไฟล์ ZIP / CBZ / RAR / CBR / 7Z")
+        self.export_act = QAction("💾 เซฟหลายหน้า…", self, shortcut=QKeySequence.StandardKey.Save, triggered=self.export)
+        self.settings_act = QAction("⚙ ตั้งค่า…", self, shortcut="Ctrl+,", triggered=self.open_settings)
+        self.info_act = QAction("ℹ ข้อมูลและสถานะ", self, shortcut="F1", triggered=self.open_info)
+        self.step_actions: dict[str, QAction] = {}
+        for i, step in enumerate(STEPS, 1):
+            self.step_actions[step] = QAction(f"{i}. {STEP_LABELS[step]}", self, shortcut=f"Ctrl+{i}",
+                                              triggered=lambda _=False, s=step: self.run_steps([s]))
+        self.all_act = QAction("▶ ทำหน้าที่เลือก", self, shortcut="F5", triggered=self.run_selected)
+        self.all_act.setToolTip("ทำครบ 5 ขั้นกับหน้าที่เลือกในรายการ (Ctrl/Shift+คลิกเพื่อเลือกหลายหน้า) ตามลำดับ")
+        self.all_pages_act = QAction("▶▶ ทำทุกหน้า", self, shortcut="Shift+F5", triggered=self.run_all_pages)
+        self.cancel_act = QAction("■ หยุด", self, shortcut="Esc", triggered=self.cancel)
+        undo = QAction("ย้อนกลับ", self, shortcut=QKeySequence.StandardKey.Undo, triggered=self.undo)
+        redo = QAction("ทำซ้ำ", self, shortcut=QKeySequence.StandardKey.Redo, triggered=self.redo)
+        delete = QAction("ลบกล่องที่เลือก", self, shortcut=QKeySequence.StandardKey.Delete, triggered=self._delete_shortcut)
+        self.layer_acts = {}
+        for n, (key, label) in enumerate(LAYERS, 1):
+            self.layer_acts[key] = QAction(label, self, shortcut=f"Alt+{n}", triggered=lambda _=False, k=key: self.show_layer(k))
+        fit_act = QAction("พอดีจอ", self, shortcut="Ctrl+0", triggered=lambda: self.canvas.fit())
+
+        mb = self.menuBar()
+        m = mb.addMenu("ไฟล์")
+        m.addActions([self.open_act, self.archive_act])
+        m.addSeparator()
+        m.addAction(self.export_act)
+        m.addSeparator()
+        m.addAction(QAction("ออก", self, shortcut="Ctrl+Q", triggered=self.close))
+        m = mb.addMenu("แก้ไข")
+        m.addActions([undo, redo])
+        m.addSeparator()
+        m.addAction(delete)
+        m = mb.addMenu("ขั้นตอน")
+        m.addActions(list(self.step_actions.values()))
+        m.addSeparator()
+        m.addActions([self.all_act, self.all_pages_act, self.cancel_act])
+        m = mb.addMenu("มุมมอง")
+        m.addActions(list(self.layer_acts.values()))
+        m.addSeparator()
+        m.addAction(fit_act)
+        m = mb.addMenu("เครื่องมือ")
+        m.addAction(self.settings_act)
+        m = mb.addMenu("ช่วยเหลือ")
+        m.addAction(self.info_act)
+
         tb = QToolBar("หลัก")
-        tb.setIconSize(QSize(18, 18))
+        tb.setObjectName("main")
         tb.setMovable(False)
         tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.addToolBar(tb)
-
-        open_act = QAction("📂 เปิดโฟลเดอร์ภาพ", self, shortcut=QKeySequence.StandardKey.Open, triggered=self.open_folder)
-        tb.addAction(open_act)
-        tb.addAction(QAction("📦 เปิดไฟล์บีบอัด", self, triggered=self.open_archive_dialog,
-                             toolTip="เปิดตอนจากไฟล์ ZIP / CBZ / RAR / CBR / 7Z"))
+        self.toolbar = tb
+        # open: click = folder, arrow = archive
+        open_btn = QToolButton()
+        open_btn.setDefaultAction(self.open_act)
+        open_btn.setText("📂 เปิด")
+        open_menu = QMenu(open_btn)
+        open_menu.addActions([self.open_act, self.archive_act])
+        open_btn.setMenu(open_menu)
+        open_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        tb.addWidget(open_btn)
         tb.addSeparator()
         self.src_combo = QComboBox()
         for code in SOURCE_LANGS:
@@ -112,36 +196,28 @@ class MainWindow(QMainWindow):
         self.tgt_combo.setCurrentIndex(max(0, TARGET_LANGS.index(self.settings.target_lang) if self.settings.target_lang in TARGET_LANGS else 0))
         self.src_combo.currentIndexChanged.connect(self._langs_changed)
         self.tgt_combo.currentIndexChanged.connect(self._langs_changed)
-        tb.addWidget(QLabel(" จาก "))
+        tb.addWidget(_spaced(QLabel("ภาษา")))
         tb.addWidget(self.src_combo)
-        tb.addWidget(QLabel(" เป็น "))
+        tb.addWidget(_spaced(QLabel("→")))
         tb.addWidget(self.tgt_combo)
         tb.addSeparator()
-
-        self.step_actions: dict[str, QAction] = {}
-        for i, step in enumerate(STEPS, 1):
-            act = QAction(f"{i}. {STEP_LABELS[step]}", self, triggered=lambda _=False, s=step: self.run_steps([s]))
-            self.step_actions[step] = act
-            tb.addAction(act)
-        tb.addSeparator()
-        self.all_act = QAction("▶ ทำหน้าที่เลือก", self, shortcut="F5", triggered=self.run_selected)
-        self.all_act.setToolTip("ทำครบ 5 ขั้นกับหน้าที่เลือกในรายการ (Ctrl/Shift+คลิกเพื่อเลือกหลายหน้า) ตามลำดับ")
-        self.all_pages_act = QAction("▶▶ ทำทุกหน้า", self, triggered=self.run_all_pages)
-        self.cancel_act = QAction("■ หยุด", self, triggered=self.cancel)
-        tb.addAction(self.all_act)
-        tb.addAction(self.all_pages_act)
+        tb.addActions([self.all_act, self.all_pages_act])
+        steps_btn = QToolButton()
+        steps_btn.setText("ทีละขั้น")  # Qt draws the menu arrow itself
+        steps_btn.setToolTip("ทำเฉพาะบางขั้นกับหน้านี้ (Ctrl+1 ถึง Ctrl+5)")
+        steps_menu = QMenu(steps_btn)
+        steps_menu.addActions(list(self.step_actions.values()))
+        steps_btn.setMenu(steps_menu)
+        steps_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        tb.addWidget(steps_btn)
+        self.steps_btn = steps_btn
         tb.addAction(self.cancel_act)
         tb.addSeparator()
-        self.export_act = QAction("💾 เซฟหลายหน้า", self, shortcut=QKeySequence.StandardKey.Save, triggered=self.export)
         tb.addAction(self.export_act)
-        tb.addAction(QAction("⚙ ตั้งค่า", self, triggered=self.open_settings))
-        tb.addAction(QAction("ℹ ข้อมูลและสถานะ", self, shortcut="F1", triggered=self.open_info))
-
-        undo = QAction("Undo", self, shortcut=QKeySequence.StandardKey.Undo, triggered=self.undo)
-        redo = QAction("Redo", self, shortcut=QKeySequence.StandardKey.Redo, triggered=self.redo)
-        delete = QAction("Delete", self, shortcut=QKeySequence.StandardKey.Delete, triggered=self._delete_shortcut)
-        for a in (undo, redo, delete):
-            self.addAction(a)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        tb.addWidget(spacer)
+        tb.addActions([self.settings_act, self.info_act])
 
         # ---- left: sort bar + pages
         left = QWidget()
@@ -164,8 +240,8 @@ class MainWindow(QMainWindow):
         sort_row.addWidget(self.sort_dir)
         ll.addLayout(sort_row)
         self.pages = QListWidget()
-        self.pages.setIconSize(QSize(72, 100))
-        self.pages.setMinimumWidth(170)
+        self.pages.setIconSize(QSize(84, 118))
+        self.pages.setMinimumWidth(200)
         self.pages.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.pages.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.pages.setDefaultDropAction(Qt.DropAction.MoveAction)
@@ -185,45 +261,57 @@ class MainWindow(QMainWindow):
         cl = QVBoxLayout(center)
         cl.setContentsMargins(0, 0, 0, 0)
         bar = QHBoxLayout()
-        bar.setContentsMargins(6, 4, 6, 0)
+        bar.setContentsMargins(8, 6, 8, 4)
+        bar.setSpacing(4)
+        bar.addWidget(_group_label("แสดง"))
         self.layer_group = QButtonGroup(self)
         for key, label in LAYERS:
             b = QPushButton(label)
             b.setCheckable(True)
             b.setProperty("layer", key)
+            b.setProperty("segment", True)
+            b.setToolTip(f"{label} ({self.layer_acts[key].shortcut().toString()})")
             self.layer_group.addButton(b)
             bar.addWidget(b)
             if key == "original":
                 b.setChecked(True)
         self.layer_group.buttonClicked.connect(lambda b: self.show_layer(b.property("layer")))
-        bar.addSpacing(16)
+        bar.addSpacing(18)
+        bar.addWidget(_group_label("เครื่องมือ"))
         self.mode_group = QButtonGroup(self)
         for mode, label, tip in [
             (MODE_SELECT, "เลือก/ย้าย", "ลากกล่องเพื่อย้าย ลากมุมขวาล่างเพื่อปรับขนาด"),
             (MODE_ADD, "+ กล่อง", "ลากบนภาพเพื่อสร้างกล่องข้อความใหม่"),
+            (MODE_TEXT, "ย้ายข้อความ", "ลากคำแปลไปวางตรงไหนก็ได้ ลากมุมขวาล่างเพื่อปรับพื้นที่ (ตัวอักษรปรับขนาดตาม)"),
             (MODE_PAINT, "ระบายส่วนที่จะลบ", "ระบายทับตัวอักษรที่ยังลบไม่หมด"),
             (MODE_ERASE, "ยางลบ", "เอาส่วนที่ไม่ใช่ตัวอักษรออกจากพื้นที่ลบ"),
-            (MODE_TEXT, "ย้ายข้อความ", "ลากคำแปลไปวางตรงไหนก็ได้ ลากมุมขวาล่างเพื่อปรับพื้นที่ (ตัวอักษรปรับขนาดตาม)"),
         ]:
             b = QPushButton(label)
             b.setCheckable(True)
             b.setToolTip(tip)
             b.setProperty("mode", mode)
+            b.setProperty("segment", True)
             self.mode_group.addButton(b)
             bar.addWidget(b)
             if mode == MODE_SELECT:
                 b.setChecked(True)
         self.mode_group.buttonClicked.connect(lambda b: self.set_mode(b.property("mode")))
+        # brush size only matters while painting or erasing the removal area
+        self.brush_box = QWidget()
+        bl = QHBoxLayout(self.brush_box)
+        bl.setContentsMargins(12, 0, 0, 0)
+        bl.addWidget(QLabel("ขนาดแปรง"))
         self.brush = QSlider(Qt.Orientation.Horizontal)
         self.brush.setRange(2, 60)
         self.brush.setValue(14)
-        self.brush.setFixedWidth(100)
-        self.brush.setToolTip("ขนาดแปรง")
+        self.brush.setFixedWidth(120)
         self.brush.valueChanged.connect(lambda v: setattr(self.canvas, "brush", v))
-        bar.addWidget(QLabel("แปรง"))
-        bar.addWidget(self.brush)
+        bl.addWidget(self.brush)
+        self.brush_box.setVisible(False)
+        bar.addWidget(self.brush_box)
         bar.addStretch()
         fit = QPushButton("พอดีจอ")
+        fit.setToolTip("พอดีจอ (Ctrl+0)")
         fit.clicked.connect(lambda: self.canvas.fit())
         bar.addWidget(fit)
         cl.addLayout(bar)
@@ -357,7 +445,7 @@ class MainWindow(QMainWindow):
         self.pages.blockSignals(True)
         self.pages.clear()
         for p in self.images:
-            item = QListWidgetItem(QIcon(QPixmap(str(p)).scaled(72, 100, Qt.AspectRatioMode.KeepAspectRatio)), "")
+            item = QListWidgetItem(QIcon(QPixmap(str(p)).scaled(84, 118, Qt.AspectRatioMode.KeepAspectRatio)), "")
             item.setData(Qt.ItemDataRole.UserRole, str(p))
             self.pages.addItem(item)
         self.pages.blockSignals(False)
@@ -532,12 +620,14 @@ class MainWindow(QMainWindow):
                 self.show_layer("original")
         self.canvas.set_show_mask(mode in (MODE_PAINT, MODE_ERASE))
         self.canvas.set_show_boxes(self.layer != "final" or mode != MODE_SELECT)
+        self.brush_box.setVisible(mode in (MODE_PAINT, MODE_ERASE))
 
     def _update_actions(self):
         busy = self.busy
         has = self.doc is not None
         for a in self.step_actions.values():
             a.setEnabled(has and not busy)
+        self.steps_btn.setEnabled(has and not busy)
         self.all_act.setEnabled(has and not busy)
         self.all_pages_act.setEnabled(has and not busy and len(self.images) > 1)
         self.sort_combo.setEnabled(not busy)
@@ -856,12 +946,18 @@ class MainWindow(QMainWindow):
         self._info.show()
         self._info.raise_()
 
+    def apply_ui_size(self, size: int):
+        app = QApplication.instance()
+        app.setFont(QFont("Leelawadee UI", size))
+        app.setStyleSheet(ui_style(size))
+
     def open_settings(self):
         dlg = SettingsDialog(self.settings, self)
         if dlg.exec():
             gpu_before = self.models.settings.use_gpu
             self.settings = dlg.apply()
             self.models.settings = self.settings
+            self.apply_ui_size(self.settings.ui_font_size)
             if gpu_before != self.settings.use_gpu:
                 self.models.release_all()
             self.statusBar().showMessage("บันทึกการตั้งค่าแล้ว", 4000)

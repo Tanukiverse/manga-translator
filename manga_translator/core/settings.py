@@ -20,6 +20,7 @@ class Settings:
     text_color: str = "#000000"
     outline_color: str = ""
     use_gpu: bool = True
+    ui_font_size: int = 11  # pt; buttons and menus scale with it
     glossary: dict[str, str] = field(default_factory=dict)
     story_notes: str = ""
     # page list
