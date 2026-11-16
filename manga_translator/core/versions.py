@@ -1,4 +1,4 @@
-"""Page history: snapshots of a page's state (page.json, mask, cleaned, final) before each run,
+"""Page history: snapshots of a page's state (page.json, mask, cleaned, paint, final) before each run,
 reset or restore, so a worse result can be undone.
 
 Snapshots hard-link the files. Layers are written by replacing the file (atomic write), so a
@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .project import PageDoc, atomic_write_text
 
-FILES = ["page.json", "mask.png", "cleaned.png", "final.png"]
+FILES = ["page.json", "mask.png", "cleaned.png", "paint.png", "final.png"]
 DIR = "versions"
 DEFAULT_KEEP = 10
 

@@ -7,12 +7,13 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QLocale, QSize, Qt, QTimer, Slot
-from PySide6.QtGui import QAction, QActionGroup, QFont, QIcon, QKeySequence, QPixmap
+from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QButtonGroup,
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -34,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import importer, versions
+from ..core import paint as paint_layer
 from ..core.export import AutoSaver
 from ..core.pages import SORT_KEYS, SORT_LABELS, load_order, save_order, sort_pages
 from ..core.pipeline import STEP_LABELS, STEPS, Models, run_typeset
@@ -41,7 +43,18 @@ from ..core.typeset import place
 from ..core.project import PageDoc, Region
 from ..core.settings import Settings
 from ..core.translate import LANG_NAMES
-from .canvas import MODE_ADD, MODE_ERASE, MODE_PAINT, MODE_SELECT, MODE_TEXT, Canvas, to_qimage
+from .canvas import (
+    COLOR_MODES,
+    MODE_ADD,
+    MODE_COLOR,
+    MODE_ERASE,
+    MODE_PAINT,
+    MODE_SELECT,
+    MODE_TEXT,
+    MODE_UNCOLOR,
+    Canvas,
+    to_qimage,
+)
 from .region_panel import RegionPanel
 from .settings_dialog import SettingsDialog
 from .worker import AIWorker
@@ -293,6 +306,9 @@ class MainWindow(QMainWindow):
             (MODE_TEXT, "ย้ายข้อความ", "ลากคำแปลไปวางตรงไหนก็ได้ ลากมุมขวาล่างเพื่อปรับพื้นที่ (ตัวอักษรปรับขนาดตาม)"),
             (MODE_PAINT, "ระบายส่วนที่จะลบ", "ระบายทับตัวอักษรที่ยังลบไม่หมด"),
             (MODE_ERASE, "ยางลบ", "เอาส่วนที่ไม่ใช่ตัวอักษรออกจากพื้นที่ลบ"),
+            (MODE_COLOR, "🖌 ระบายสี", "ระบายสีทับภาพด้วยมือ เช่น ปิดรอยที่ลบไม่หมด สีอยู่ใต้คำแปลเสมอ\n"
+                                     "Alt+คลิก = ดูดสีจากภาพ  ·  สีที่ระบายไม่หายเมื่อรันขั้นตอนซ้ำ"),
+            (MODE_UNCOLOR, "ลบสี", "ลบสีที่ระบายไว้ (ภาพต้นฉบับและคำแปลไม่ถูกแตะ)"),
         ]:
             b = QPushButton(label)
             b.setCheckable(True)
@@ -315,6 +331,21 @@ class MainWindow(QMainWindow):
         self.brush.setFixedWidth(120)
         self.brush.valueChanged.connect(lambda v: setattr(self.canvas, "brush", v))
         bl.addWidget(self.brush)
+        # colour and colour picker: only for the colour brush
+        self.color_box = QWidget()
+        xl = QHBoxLayout(self.color_box)
+        xl.setContentsMargins(8, 0, 0, 0)
+        xl.setSpacing(4)
+        self.color_btn = QPushButton()
+        self.color_btn.setToolTip("เลือกสีที่จะระบาย")
+        self.color_btn.clicked.connect(self.choose_paint_color)
+        xl.addWidget(self.color_btn)
+        self.pick_btn = QPushButton("ดูดสี")
+        self.pick_btn.setCheckable(True)
+        self.pick_btn.setToolTip("คลิกบนภาพเพื่อใช้สีตรงนั้น (หรือกด Alt ค้างแล้วคลิก)")
+        self.pick_btn.toggled.connect(self._pick_toggled)
+        xl.addWidget(self.pick_btn)
+        bl.addWidget(self.color_box)
         self.brush_box.setVisible(False)
         bar.addWidget(self.brush_box)
         bar.addStretch()
@@ -330,6 +361,10 @@ class MainWindow(QMainWindow):
         self.canvas.region_added.connect(self._canvas_added)
         self.canvas.mask_edit_started.connect(self.push_undo)
         self.canvas.mask_edited.connect(self._mask_edited)
+        self.canvas.paint_edit_started.connect(self.push_undo)
+        self.canvas.paint_edited.connect(self._paint_edited)
+        self.canvas.color_picked.connect(self._color_picked)
+        self._set_paint_color(QColor(self.settings.paint_color or "#ffffff"), save=False)
         # drops of files land on the window (handled below), not on the page canvas
         self.canvas.setAcceptDrops(False)
         self.canvas.viewport().setAcceptDrops(False)
@@ -566,6 +601,12 @@ class MainWindow(QMainWindow):
             return
         self._refresh_boxes()
         self.canvas.set_mask(self.doc.load_layer("mask"))
+        try:
+            self.canvas.set_paint(self.doc.load_paint())
+        except (OSError, ValueError):
+            self.canvas.set_paint(None)
+        if self.canvas.mode in COLOR_MODES:
+            self._ensure_paint()
         self.panel.set_regions(self.doc.regions, self.selected)
         self.show_layer(layer or self.layer, fit=fit)
         self._update_actions()
@@ -587,14 +628,25 @@ class MainWindow(QMainWindow):
             b.setChecked(b.property("layer") == layer)
         self.canvas.set_image(img, fit=fit)
         # boxes clutter the finished page; show them on the working layers
-        self.canvas.set_show_boxes(layer != "final" or self.canvas.mode != MODE_SELECT)
+        self.canvas.set_show_boxes(self._boxes_visible())
         self.canvas.set_show_mask(self.canvas.mode in (MODE_PAINT, MODE_ERASE))
+        self.canvas.set_show_paint(self._paint_visible())
+
+    def _boxes_visible(self) -> bool:
+        # boxes clutter the finished page and get in the way of the colour brush
+        mode = self.canvas.mode
+        return mode not in COLOR_MODES and (self.layer != "final" or mode != MODE_SELECT)
+
+    def _paint_visible(self) -> bool:
+        # final already has the paint under its text; on cleaned it shows on top, and on the
+        # original only while painting (a page with no cleaned layer yet)
+        return self.layer == "cleaned" or (self.layer == "original" and self.canvas.mode in COLOR_MODES)
 
     def _text_rects(self) -> dict[int, list[int]]:
         """Where each translation is drawn now (the user's box or the automatic fit)."""
-        cleaned = self.doc.load_layer("cleaned")
-        if cleaned is None:
+        if not self.doc.cleaned_path.exists():
             return {}
+        cleaned = self.doc.load_base()  # what the text is drawn on, so the boxes match the picture
         boxes = {r.id: r.bbox for r in self.doc.regions}
         return {r.id: list(place(cleaned, r, self.doc.target_lang, self.settings.font_family,
                                  [b for i, b in boxes.items() if i != r.id])[0])
@@ -626,9 +678,20 @@ class MainWindow(QMainWindow):
                 self.canvas.set_mask(np.zeros(self.doc.load_original().shape[:2], np.uint8))
             if self.layer == "final":
                 self.show_layer("original")
+        if mode in COLOR_MODES and self.doc:
+            self._ensure_paint()
+            if self.layer == "original":  # paint where it shows: the finished page, else the cleaned one
+                for layer in ("final", "cleaned"):
+                    if (self.doc.folder / f"{layer}.png").exists():
+                        self.show_layer(layer)
+                        break
+        if mode not in COLOR_MODES:
+            self.pick_btn.setChecked(False)
         self.canvas.set_show_mask(mode in (MODE_PAINT, MODE_ERASE))
-        self.canvas.set_show_boxes(self.layer != "final" or mode != MODE_SELECT)
-        self.brush_box.setVisible(mode in (MODE_PAINT, MODE_ERASE))
+        self.canvas.set_show_paint(self._paint_visible())
+        self.canvas.set_show_boxes(self._boxes_visible())
+        self.brush_box.setVisible(mode in (MODE_PAINT, MODE_ERASE) or mode in COLOR_MODES)
+        self.color_box.setVisible(mode in COLOR_MODES)
 
     def _update_actions(self):
         busy = self.busy
@@ -756,10 +819,56 @@ class MainWindow(QMainWindow):
         self.doc.save()
         self.statusBar().showMessage("แก้พื้นที่ลบแล้ว กด 'ลบคำ' เพื่อใช้ผล", 5000)
 
+    # ======================================================= colour paint
+    def _ensure_paint(self):
+        if self.doc and self.canvas.paint is None:
+            self.canvas.set_paint(paint_layer.blank(self.doc.load_original().shape))
+
+    def _set_paint_color(self, color: QColor, save: bool = True):
+        self.canvas.paint_color = (color.blue(), color.green(), color.red())
+        self.color_btn.setText(color.name())
+        ink = "#000" if color.lightness() > 140 else "#fff"
+        self.color_btn.setStyleSheet(f"background:{color.name()}; color:{ink}; border:1px solid #888; min-width:5.5em;")
+        if save and self.settings.paint_color != color.name():
+            self.settings.paint_color = color.name()
+            self.settings.save()
+
+    def choose_paint_color(self):
+        b, g, r = self.canvas.paint_color
+        color = QColorDialog.getColor(QColor(r, g, b), self, "สีที่จะระบาย")
+        if color.isValid():
+            self._set_paint_color(color)
+
+    def _pick_toggled(self, on: bool):
+        self.canvas.picking = on
+        if on:
+            self.statusBar().showMessage("คลิกบนภาพเพื่อดูดสี", 4000)
+
+    def _color_picked(self, color: QColor):
+        self.pick_btn.setChecked(False)
+        self._set_paint_color(color)
+        self.statusBar().showMessage(f"ใช้สี {color.name()}", 3000)
+
+    def _apply_paint(self):
+        """Store the paint layer and redraw the finished page on top of it."""
+        self.doc.save_paint(self.canvas.paint)
+        if self.doc.final_path.exists() or self.doc.cleaned_path.exists():
+            run_typeset(self.doc, self.models, self.statusBar().showMessage)
+            self._autosave_timer.start()
+            if self.layer == "final":
+                self.show_layer("final")
+
+    def _paint_edited(self):
+        try:
+            self._apply_paint()
+        except (OSError, ValueError) as e:
+            self.statusBar().showMessage(f"บันทึกสีที่ระบายไม่ได้: {e}", 8000)
+
     # ============================================================= undo
     def _snapshot(self, regions_override=None):
         mask = self.canvas.mask.copy() if self.canvas.mask is not None else None
-        return (copy.deepcopy(regions_override if regions_override is not None else self.doc.regions), mask)
+        paint = self.canvas.paint.copy() if self.canvas.paint is not None else None
+        return (copy.deepcopy(regions_override if regions_override is not None else self.doc.regions), mask, paint)
 
     def push_undo(self, snapshot=None):
         if not self.doc:
@@ -769,11 +878,15 @@ class MainWindow(QMainWindow):
         self.redo_stack.clear()
 
     def _restore(self, snap):
-        regions, mask = snap
+        regions, mask, paint = snap
         self.doc.regions = regions
         self.doc.save()
         if mask is not None:
             self.doc.save_layer("mask", mask)
+        now = self.canvas.paint
+        if (paint is None) != (now is None) or (paint is not None and not np.array_equal(paint, now)):
+            self.canvas.set_paint(paint)
+            self._apply_paint()
         self.reload()
 
     def undo(self):

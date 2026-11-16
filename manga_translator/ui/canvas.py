@@ -1,4 +1,4 @@
-"""Page canvas: shows one layer, editable region boxes, and a brush for the text mask."""
+"""Page canvas: shows one layer, editable region boxes, a brush for the text mask and a colour brush."""
 from __future__ import annotations
 
 import cv2
@@ -14,7 +14,11 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
+from ..core import paint as paint_layer
+
 MODE_SELECT, MODE_ADD, MODE_PAINT, MODE_ERASE, MODE_TEXT = "select", "add", "paint", "erase", "text"
+MODE_COLOR, MODE_UNCOLOR = "color", "uncolor"  # paint colour on the page / wipe that paint off
+COLOR_MODES = (MODE_COLOR, MODE_UNCOLOR)
 HANDLE = 10
 
 
@@ -124,6 +128,9 @@ class Canvas(QGraphicsView):
     region_added = Signal(list)  # bbox
     mask_edit_started = Signal()
     mask_edited = Signal()
+    paint_edit_started = Signal()
+    paint_edited = Signal()
+    color_picked = Signal(QColor)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -135,13 +142,21 @@ class Canvas(QGraphicsView):
         self.image_item = QGraphicsPixmapItem()
         self.mask_item = QGraphicsPixmapItem()
         self.mask_item.setOpacity(0.45)
+        self.paint_item = QGraphicsPixmapItem()  # the colour paint, shown over the page
+        self.paint_item.setVisible(False)
         self.scene().addItem(self.image_item)
+        self.scene().addItem(self.paint_item)
         self.scene().addItem(self.mask_item)
         self.items_by_id: dict[int, RegionItem] = {}
         self.mode = MODE_SELECT
         self.brush = 14
         self.mask: np.ndarray | None = None
         self.show_mask = False
+        self.image: np.ndarray | None = None  # the layer on screen (BGR), for picking colours
+        self.paint: np.ndarray | None = None  # BGRA premultiplied, see core/paint.py
+        self.show_paint = False
+        self.paint_color = (0, 0, 0)  # BGR
+        self.picking = False  # next click in a colour mode takes the colour under the cursor
         self.show_boxes = True
         self._drag_start: QPointF | None = None
         self._rubber: QGraphicsRectItem | None = None
@@ -150,6 +165,7 @@ class Canvas(QGraphicsView):
 
     # ---- content -----------------------------------------------------
     def set_image(self, img: np.ndarray | None, fit: bool = False):
+        self.image = img
         if img is None:
             self.image_item.setPixmap(QPixmap())
             return
@@ -177,6 +193,24 @@ class Canvas(QGraphicsView):
     def set_show_mask(self, on: bool):
         self.show_mask = on
         self._refresh_mask()
+
+    def set_paint(self, paint: np.ndarray | None):
+        self.paint = paint
+        self._refresh_paint()
+
+    def set_show_paint(self, on: bool):
+        self.show_paint = on
+        self._refresh_paint()
+
+    def _refresh_paint(self):
+        if self.paint is None or not (self.show_paint or self._last_paint is not None and self.mode in COLOR_MODES):
+            self.paint_item.setVisible(False)
+            return
+        h, w = self.paint.shape[:2]
+        # BGRA bytes are what Qt calls ARGB32 on little-endian machines; the layer is premultiplied
+        qimg = QImage(self.paint.data, w, h, 4 * w, QImage.Format.Format_ARGB32_Premultiplied).copy()
+        self.paint_item.setPixmap(QPixmap.fromImage(qimg))
+        self.paint_item.setVisible(True)
 
     def set_regions(self, regions, selected: int | None = None, text_rects: dict | None = None):
         """Show region boxes, or with text_rects ({id: rect}) the boxes of the drawn translations."""
@@ -243,6 +277,14 @@ class Canvas(QGraphicsView):
             self._last_paint = p
             self._paint(p, p)
             return
+        if self.mode in COLOR_MODES and self.paint is not None and e.button() == Qt.MouseButton.LeftButton:
+            if self.picking or e.modifiers() & Qt.KeyboardModifier.AltModifier:
+                self._pick(p)
+                return
+            self.paint_edit_started.emit()
+            self._last_paint = p
+            self._paint(p, p)
+            return
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
@@ -278,11 +320,29 @@ class Canvas(QGraphicsView):
             return
         if self._last_paint is not None:
             self._last_paint = None
-            self.mask_edited.emit()
+            if self.mode in COLOR_MODES:
+                self._refresh_paint()
+                self.paint_edited.emit()
+            else:
+                self.mask_edited.emit()
             return
         super().mouseReleaseEvent(e)
 
+    def _pick(self, p: QPointF):
+        self.picking = False
+        if self.image is None:
+            return
+        bgr = paint_layer.pick(self.image, self.paint if self.paint_item.isVisible() else None, int(p.x()), int(p.y()))
+        if bgr is not None:
+            self.paint_color = bgr
+            self.color_picked.emit(QColor(bgr[2], bgr[1], bgr[0]))
+
     def _paint(self, a: QPointF, b: QPointF):
+        if self.mode in COLOR_MODES:
+            paint_layer.stroke(self.paint, (a.x(), a.y()), (b.x(), b.y()), self.brush, self.paint_color,
+                               erase=self.mode == MODE_UNCOLOR)
+            self._refresh_paint()
+            return
         value = 255 if self.mode == MODE_PAINT else 0
         cv2.line(self.mask, (int(a.x()), int(a.y())), (int(b.x()), int(b.y())), value, self.brush * 2, cv2.LINE_8)
         self._refresh_mask()

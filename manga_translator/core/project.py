@@ -4,7 +4,8 @@ Layout of a page folder:
     original.png  - source image (never modified)
     mask.png      - text mask (white = remove), editable by the user
     cleaned.png   - original with text removed
-    final.png     - cleaned + typeset translation
+    paint.png     - the user's colour painting (BGRA, premultiplied), laid over cleaned
+    final.png     - cleaned + paint + typeset translation
     page.json     - regions and settings
 """
 from __future__ import annotations
@@ -73,6 +74,10 @@ class PageDoc:
         return self.folder / "final.png"
 
     @property
+    def paint_path(self) -> Path:
+        return self.folder / "paint.png"
+
+    @property
     def json_path(self) -> Path:
         return self.folder / "page.json"
 
@@ -88,6 +93,27 @@ class PageDoc:
 
     def save_layer(self, name: str, img: np.ndarray) -> None:
         imwrite(self.folder / f"{name}.png", img)
+
+    def load_paint(self) -> np.ndarray | None:
+        if not self.paint_path.exists():
+            return None
+        return imread(self.paint_path, unchanged=True)
+
+    def save_paint(self, paint: np.ndarray | None) -> None:
+        """Store the paint layer; an empty one removes the file."""
+        if paint is None or not paint[..., 3].any():
+            self.paint_path.unlink(missing_ok=True)
+        else:
+            imwrite(self.paint_path, paint)
+
+    def load_base(self) -> np.ndarray:
+        """What the translation is drawn on: the cleaned page (or the original) with the paint on top."""
+        from .paint import composite
+
+        base = self.load_layer("cleaned")
+        if base is None:
+            base = self.load_original()
+        return composite(base, self.load_paint())
 
     # ---- regions -----------------------------------------------------
     def next_region_id(self) -> int:
@@ -156,10 +182,10 @@ def atomic_write_text(path: Path, text: str) -> None:
     _replace_with_retry(tmp, path)
 
 
-def imread(path: Path, gray: bool = False) -> np.ndarray:
+def imread(path: Path, gray: bool = False, unchanged: bool = False) -> np.ndarray:
     # cv2.imread cannot open non-ASCII (e.g. Thai/Japanese) paths on Windows
     data = np.fromfile(str(path), dtype=np.uint8)
-    flag = cv2.IMREAD_GRAYSCALE if gray else cv2.IMREAD_COLOR
+    flag = cv2.IMREAD_UNCHANGED if unchanged else cv2.IMREAD_GRAYSCALE if gray else cv2.IMREAD_COLOR
     img = cv2.imdecode(data, flag)
     if img is None:
         raise ValueError(f"cannot read image: {path}")

@@ -278,10 +278,7 @@ def run_clean(doc: PageDoc, models: Models, progress: Progress | None = None) ->
 def run_typeset(doc: PageDoc, models: Models, progress: Progress | None = None) -> list[int]:
     from .typeset import render
 
-    cleaned = doc.load_layer("cleaned")
-    if cleaned is None:
-        cleaned = doc.load_original()
-    final, overflow = render(cleaned, doc.regions, doc.target_lang, models.settings.font_family)
+    final, overflow = render(doc.load_base(), doc.regions, doc.target_lang, models.settings.font_family)
     doc.save_layer("final", final)
     doc.done["typeset"] = True
     doc.save()

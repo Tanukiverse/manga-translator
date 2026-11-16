@@ -19,6 +19,7 @@ class Settings:
     font_family: str = ""  # empty = per-language default
     text_color: str = "#000000"
     outline_color: str = ""
+    paint_color: str = "#ffffff"  # colour brush; white covers leftovers in speech bubbles
     use_gpu: bool = True
     ui_font_size: int = 11  # pt; buttons and menus scale with it
     glossary: dict[str, str] = field(default_factory=dict)
